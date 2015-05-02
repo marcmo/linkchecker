@@ -27,7 +27,8 @@ type Result struct {
 }
 
 func stripInPageLink(s string) (*u.URL, error) {
-	_s := strings.Split(s, "#")[0]
+	noPageLinks := strings.Split(s, "#")[0]
+	_s := strings.Split(noPageLinks, "?")[0]
 	parsed, err := u.Parse(_s)
 	if err != nil {
 		return nil, err
@@ -35,19 +36,26 @@ func stripInPageLink(s string) (*u.URL, error) {
 	return u.Parse(removeParameters(*parsed))
 }
 
-func collectLinks(url u.URL) (chan VisitedUrl, chan error) {
+func collectLinks(url u.URL, domainCheck func(u.URL) bool) (chan VisitedUrl, chan error) {
 	c := make(chan VisitedUrl)
 	errChan := make(chan error)
 	go func() {
+		defer close(c)
+		defer close(errChan)
+		fmt.Printf("~~~~~~ crawling %s\n", url.String())
 		res, err := http.Get(url.String())
 		if err != nil {
 			errChan <- err
+			log.Printf("error occured during http.Get for %s\n", url.String())
+			return
 		}
-		linkedUrls := make([]u.URL, 0)
-		if res.StatusCode >= 200 && res.StatusCode < 300 {
+		linkedUrls := make(map[u.URL]bool)
+		if res.StatusCode >= 200 && res.StatusCode < 300 &&
+			domainCheck(url) {
 			doc, err := goquery.NewDocumentFromResponse(res)
 			if err != nil {
 				errChan <- err
+				return
 			}
 			doc.Find("a").Each(func(_ int, sel *goquery.Selection) {
 				href, _ := sel.Attr("href")
@@ -56,27 +64,37 @@ func collectLinks(url u.URL) (chan VisitedUrl, chan error) {
 					errChan <- err
 					return
 				}
-				if parsed.String() != "" {
+				str := parsed.String()
+				if str != "" {
 					ref := *url.ResolveReference(parsed)
-					fmt.Printf(" ===========> appending %s\n", ref.String())
-					linkedUrls = append(linkedUrls, ref)
+					if !linkedUrls[ref] &&
+						(ref.Scheme == "http" || ref.Scheme == "https") {
+						// fmt.Printf(" ===========> appending %s\n", ref.String())
+						linkedUrls[ref] = true
+					}
 				}
 			})
 		}
-		c <- VisitedUrl{url, res.StatusCode, linkedUrls}
-		close(c)
+		keys := make([]u.URL, len(linkedUrls))
+		i := 0
+		for k := range linkedUrls {
+			keys[i] = k
+			i += 1
+		}
+		c <- VisitedUrl{url, res.StatusCode, keys}
 	}()
 	return c, errChan
 }
 
 type Search struct {
-	toQuery    <-chan u.URL      // pull next url to test from this channel
-	unfiltered chan<- u.URL      // send all found links back
-	results    chan<- VisitedUrl // send all found links back
-	quit       <-chan bool       // listen to when we should quit
-	id         int
-	wg         *sync.WaitGroup
-	workerWg   *sync.WaitGroup
+	toQuery     <-chan u.URL      // pull next url to test from this channel
+	unfiltered  chan<- u.URL      // send all found links back
+	results     chan<- VisitedUrl // send all found links back
+	quit        <-chan bool       // listen to when we should quit
+	domainCheck func(u.URL) bool
+	id          int
+	wg          *sync.WaitGroup
+	workerWg    *sync.WaitGroup
 }
 
 func searchPage(s Search) {
@@ -88,7 +106,7 @@ func searchPage(s Search) {
 				return
 			}
 			fmt.Printf("[%d]..............searching %s\n", s.id, url.String())
-			testedChan, errChan := collectLinks(url)
+			testedChan, errChan := collectLinks(url, s.domainCheck)
 			select {
 			case t := <-testedChan:
 				for _, v := range t.LinkedUrls {
@@ -145,11 +163,11 @@ func main() {
 
 	workerWg.Add(WORKERS)
 	for i := 0; i < WORKERS; i++ {
-		s := Search{toQuery, unfiltered, results, quit, i, &wg, &workerWg}
+		s := Search{toQuery, unfiltered, results, quit, domainCheck, i, &wg, &workerWg}
 		go searchPage(s)
 	}
 	// setup filtering
-	go filterNonRelevant(unfiltered, toQuery, &wg, domainCheck)
+	go filterNonRelevant(unfiltered, toQuery, &wg)
 	go filterSeenResults(results, filteredResults)
 
 	go func() {
@@ -187,16 +205,14 @@ func removeParameters(url u.URL) string {
 	return url.Scheme + "://" + url.Host + url.Path
 }
 
-func filterNonRelevant(in <-chan u.URL, out chan<- u.URL, wg *sync.WaitGroup, domainCheck func(u.URL) bool) {
+func filterNonRelevant(in <-chan u.URL, out chan<- u.URL, wg *sync.WaitGroup) {
 	var checked = make(map[string]bool)
 	for v := range in {
 		link := removeParameters(v)
 		if !checked[link] {
 			checked[link] = true
-			if domainCheck(v) {
-				out <- v
-				fmt.Printf(".........................added %s [host:%s]\n", v.String(), v.Host)
-			}
+			out <- v
+			fmt.Printf(".........................added %s [host:%s]\n", v.String(), v.Host)
 		} else {
 			wg.Done() //already counted for, but we don't use it
 		}
