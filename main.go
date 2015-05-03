@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 )
 
-const WORKERS int = 1
-
 var totalWorkItems int32 = 0
 
 type VisitedUrl struct {
@@ -142,6 +140,7 @@ func searchPage(s Search) {
 
 func main() {
 	urlString := flag.String("s", "http://esrlabs.com", "the URL of the site to check links")
+	parallel := flag.Int("p", 5, "number of parallel executions")
 	flag.Parse()
 	url, err := u.Parse(*urlString)
 	if err != nil {
@@ -175,8 +174,8 @@ func main() {
 	wg.Add(1)
 	toQuery <- *url
 
-	workerWg.Add(WORKERS)
-	for i := 0; i < WORKERS; i++ {
+	workerWg.Add(*parallel)
+	for i := 0; i < *parallel; i++ {
 		s := Search{toQuery, unfiltered, results, quit, domainCheck, i, &wg, &workerWg}
 		go searchPage(s)
 	}
@@ -186,14 +185,14 @@ func main() {
 
 	go func() {
 		for v := range results {
-			fmt.Printf("Checked: %s (Status %d)\n", v.Url.String(), v.Status)
+			fmt.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
 		}
 	}()
 
 	fmt.Printf("waiting for queue...\n")
 	wg.Wait()
 	fmt.Printf("queue done!!\n")
-	for i := 0; i < WORKERS; i++ {
+	for i := 0; i < *parallel; i++ {
 		quit <- true
 	}
 	fmt.Printf("waiting for crunchers...\n")
