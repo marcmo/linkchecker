@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"github.com/PuerkitoBio/goquery"
 	"log"
 	"net"
 	"net/http"
@@ -27,16 +26,6 @@ type Result struct {
 	Status string
 }
 
-func stripInPageLink(s string) (*u.URL, error) {
-	noPageLinks := strings.Split(s, "#")[0]
-	_s := strings.Split(noPageLinks, "?")[0]
-	parsed, err := u.Parse(_s)
-	if err != nil {
-		return nil, err
-	}
-	return u.Parse(removeParameters(*parsed))
-}
-
 func contentCanHaveLinks(r http.Response) bool {
 	return strings.Contains(r.Header["Content-Type"][0], "text/html")
 }
@@ -55,43 +44,21 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 			Error.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
 			return
 		}
-
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
-			Error.Printf("status code error occured during http.Head for %s:%d\n", url.String(), res.StatusCode)
+			Trace.Printf("HTTP status not OK %s (%d)\n", url.String(), res.StatusCode)
 			return
 		}
 		if checkDomain(url) && contentCanHaveLinks(*res) {
 			Trace.Printf("~~~~~~ crawling %s\n", url.String())
-			res, err := http.Get(url.String())
-			if err != nil {
-				errChan <- err
-				Error.Printf("error occured during http.Get for %s\n", url.String())
-				return
-			}
-			doc, err := goquery.NewDocumentFromResponse(res)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			doc.Find("a").Each(func(_ int, sel *goquery.Selection) {
-				href, _ := sel.Attr("href")
-				parsed, err := stripInPageLink(href)
-				if err != nil {
-					errChan <- err
-					return
+			linkChan := GetAllLinks(url, errChan)
+			for e := range linkChan {
+				if !linkedUrls[e] {
+					linkedUrls[e] = true
+					atomic.AddInt32(&totalWorkItems, 1)
+					Trace.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, e.String())
 				}
-				str := parsed.String()
-				if str != "" {
-					ref := *url.ResolveReference(parsed)
-					if !linkedUrls[ref] &&
-						(ref.Scheme == "http" || ref.Scheme == "https") {
-						linkedUrls[ref] = true
-						atomic.AddInt32(&totalWorkItems, 1)
-						Trace.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, ref.String())
-					}
-				}
-			})
+			}
 		}
 		c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
 	}()
@@ -126,7 +93,6 @@ func searchPage(s Search) {
 					s.unfiltered <- v
 					atomic.AddInt32(&totalWorkItems, -1)
 				}
-				Trace.Printf("[%d]..............aadding results %s\n", s.id, t)
 				s.results <- t
 				break
 			case err := <-errChan:
@@ -141,7 +107,7 @@ func searchPage(s Search) {
 }
 
 func main() {
-	SetLogLevel(TRACE)
+	SetLogLevel(INFO)
 	urlString := flag.String("s", "http://esrlabs.com", "the URL of the site to check links")
 	parallel := flag.Int("p", 5, "number of parallel executions")
 	flag.Parse()
@@ -192,15 +158,15 @@ func main() {
 		}
 	}()
 
-	fmt.Printf("waiting for queue...\n")
+	Info.Printf("waiting for queue...\n")
 	wg.Wait()
-	fmt.Printf("queue done!!\n")
+	Info.Printf("queue done!!\n")
 	for i := 0; i < *parallel; i++ {
 		quit <- true
 	}
-	fmt.Printf("waiting for crunchers...\n")
+	Info.Printf("waiting for crunchers...\n")
 	workerWg.Wait()
-	fmt.Printf("crunchers done!!\n")
+	Info.Printf("crunchers done!!\n")
 	close(results)
 }
 
