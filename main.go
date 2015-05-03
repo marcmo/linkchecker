@@ -11,19 +11,22 @@ import (
 	u "net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-const WORKERS int = 20
+const WORKERS int = 1
+
+var totalWorkItems int32 = 0
 
 type VisitedUrl struct {
 	Url        u.URL
-	Status     int
-	LinkedUrls []u.URL
+	Status     string
+	LinkedUrls map[u.URL]bool
 }
 
 type Result struct {
 	Url    string
-	Status int
+	Status string
 }
 
 func stripInPageLink(s string) (*u.URL, error) {
@@ -36,22 +39,37 @@ func stripInPageLink(s string) (*u.URL, error) {
 	return u.Parse(removeParameters(*parsed))
 }
 
-func collectLinks(url u.URL, domainCheck func(u.URL) bool) (chan VisitedUrl, chan error) {
+func contentCanHaveLinks(r http.Response) bool {
+	return strings.Contains(r.Header["Content-Type"][0], "text/html")
+}
+
+func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, chan error) {
 	c := make(chan VisitedUrl)
 	errChan := make(chan error)
 	go func() {
 		defer close(c)
 		defer close(errChan)
-		fmt.Printf("~~~~~~ crawling %s\n", url.String())
-		res, err := http.Get(url.String())
+		fmt.Printf("~~~~~~ trying %s\n", url.String())
+		res, err := http.Head(url.String())
+		linkedUrls := make(map[u.URL]bool)
 		if err != nil {
-			errChan <- err
-			log.Printf("error occured during http.Get for %s\n", url.String())
+			c <- VisitedUrl{url, fmt.Sprintf("Error:%d", err), linkedUrls}
+			log.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
 			return
 		}
-		linkedUrls := make(map[u.URL]bool)
-		if res.StatusCode >= 200 && res.StatusCode < 300 &&
-			domainCheck(url) {
+
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
+			return
+		}
+		if checkDomain(url) && contentCanHaveLinks(*res) {
+			fmt.Printf("~~~~~~ crawling %s\n", url.String())
+			res, err := http.Get(url.String())
+			if err != nil {
+				errChan <- err
+				log.Printf("error occured during http.Get for %s\n", url.String())
+				return
+			}
 			doc, err := goquery.NewDocumentFromResponse(res)
 			if err != nil {
 				errChan <- err
@@ -69,19 +87,14 @@ func collectLinks(url u.URL, domainCheck func(u.URL) bool) (chan VisitedUrl, cha
 					ref := *url.ResolveReference(parsed)
 					if !linkedUrls[ref] &&
 						(ref.Scheme == "http" || ref.Scheme == "https") {
-						// fmt.Printf(" ===========> appending %s\n", ref.String())
 						linkedUrls[ref] = true
+						atomic.AddInt32(&totalWorkItems, 1)
+						fmt.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, ref.String())
 					}
 				}
 			})
 		}
-		keys := make([]u.URL, len(linkedUrls))
-		i := 0
-		for k := range linkedUrls {
-			keys[i] = k
-			i += 1
-		}
-		c <- VisitedUrl{url, res.StatusCode, keys}
+		c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
 	}()
 	return c, errChan
 }
@@ -109,9 +122,10 @@ func searchPage(s Search) {
 			testedChan, errChan := collectLinks(url, s.domainCheck)
 			select {
 			case t := <-testedChan:
-				for _, v := range t.LinkedUrls {
+				for v := range t.LinkedUrls {
 					s.wg.Add(1)
 					s.unfiltered <- v
+					atomic.AddInt32(&totalWorkItems, -1)
 				}
 				s.results <- t
 				break
