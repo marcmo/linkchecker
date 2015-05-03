@@ -47,25 +47,26 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 	go func() {
 		defer close(c)
 		defer close(errChan)
-		fmt.Printf("~~~~~~ trying %s\n", url.String())
+		Trace.Printf("~~~~~~ trying %s\n", url.String())
 		res, err := http.Head(url.String())
 		linkedUrls := make(map[u.URL]bool)
 		if err != nil {
-			c <- VisitedUrl{url, fmt.Sprintf("Error:%d", err), linkedUrls}
-			log.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
+			c <- VisitedUrl{url, fmt.Sprintf("Error:%s", err), linkedUrls}
+			Error.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
 			return
 		}
 
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
+			Error.Printf("status code error occured during http.Head for %s:%d\n", url.String(), res.StatusCode)
 			return
 		}
 		if checkDomain(url) && contentCanHaveLinks(*res) {
-			fmt.Printf("~~~~~~ crawling %s\n", url.String())
+			Trace.Printf("~~~~~~ crawling %s\n", url.String())
 			res, err := http.Get(url.String())
 			if err != nil {
 				errChan <- err
-				log.Printf("error occured during http.Get for %s\n", url.String())
+				Error.Printf("error occured during http.Get for %s\n", url.String())
 				return
 			}
 			doc, err := goquery.NewDocumentFromResponse(res)
@@ -87,7 +88,7 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 						(ref.Scheme == "http" || ref.Scheme == "https") {
 						linkedUrls[ref] = true
 						atomic.AddInt32(&totalWorkItems, 1)
-						fmt.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, ref.String())
+						Trace.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, ref.String())
 					}
 				}
 			})
@@ -116,7 +117,7 @@ func searchPage(s Search) {
 			if !ok {
 				return
 			}
-			fmt.Printf("[%d]..............searching %s\n", s.id, url.String())
+			Trace.Printf("[%d]..............searching %s\n", s.id, url.String())
 			testedChan, errChan := collectLinks(url, s.domainCheck)
 			select {
 			case t := <-testedChan:
@@ -125,10 +126,11 @@ func searchPage(s Search) {
 					s.unfiltered <- v
 					atomic.AddInt32(&totalWorkItems, -1)
 				}
+				Trace.Printf("[%d]..............aadding results %s\n", s.id, t)
 				s.results <- t
 				break
 			case err := <-errChan:
-				log.Print(err)
+				Error.Print(err.Error())
 			}
 			s.wg.Done()
 		case <-s.quit:
@@ -139,6 +141,7 @@ func searchPage(s Search) {
 }
 
 func main() {
+	SetLogLevel(TRACE)
 	urlString := flag.String("s", "http://esrlabs.com", "the URL of the site to check links")
 	parallel := flag.Int("p", 5, "number of parallel executions")
 	flag.Parse()
@@ -185,7 +188,7 @@ func main() {
 
 	go func() {
 		for v := range results {
-			fmt.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
+			Info.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
 		}
 	}()
 
@@ -225,7 +228,7 @@ func filterNonRelevant(in <-chan u.URL, out chan<- u.URL, wg *sync.WaitGroup) {
 		if !checked[link] {
 			checked[link] = true
 			out <- v
-			fmt.Printf(".........................added %s [host:%s]\n", v.String(), v.Host)
+			Trace.Printf(".........................added %s [host:%s]\n", v.String(), v.Host)
 		} else {
 			wg.Done() //already counted for, but we don't use it
 		}
