@@ -119,19 +119,9 @@ func main() {
 	if err != nil {
 		log.Fatal("could not lookup ip of \"", url, "\"")
 	}
-	fmt.Printf("host:%s, ip: %s\n", url.Host, ip)
-	domainCheck := func(url2check u.URL) bool {
-		domain := strings.TrimPrefix(url.Host, "www.")
-		if strings.HasSuffix(url2check.Host, domain) {
-			return true
-		}
-		// if cheap test doesn't work, lookup IP
-		_ip, err := net.LookupIP(url2check.Host)
-		if err != nil {
-			return false
-		}
-		return bytes.Equal(_ip[0], ip[0])
-	}
+	Info.Printf("host:%s, ip: %s\n", url.Host, ip)
+
+	domainCheck := createDomainCheck(*url, ip)
 	toQuery := make(chan u.URL, 10000)
 	unfiltered := make(chan u.URL, 10000)
 	results := make(chan VisitedUrl)
@@ -168,6 +158,22 @@ func main() {
 	workerWg.Wait()
 	Info.Printf("crunchers done!!\n")
 	close(results)
+}
+
+func createDomainCheck(url u.URL, ip []net.IP) func(u.URL) bool {
+	domainCheck := func(url2check u.URL) bool {
+		domain := strings.TrimPrefix(url.Host, "www.")
+		if strings.HasSuffix(url2check.Host, domain) {
+			return true
+		}
+		// if cheap test doesn't work, lookup IP
+		_ip, err := net.LookupIP(url2check.Host)
+		if err != nil {
+			return false
+		}
+		return bytes.Equal(_ip[0], ip[0])
+	}
+	return domainCheck
 }
 
 func filterSeenResults(results <-chan VisitedUrl, filteredResults chan<- Result) {
