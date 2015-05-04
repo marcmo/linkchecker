@@ -11,14 +11,18 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+const REQUEST_TIMEOUT = 6
 
 var totalWorkItems int32 = 0
 
 type VisitedUrl struct {
-	Url        u.URL
-	Status     string
-	LinkedUrls map[u.URL]bool
+	Url         u.URL
+	Status      string
+	LinkedUrls  map[u.URL]bool
+	HadProblems bool
 }
 
 type Result struct {
@@ -33,19 +37,25 @@ func contentCanHaveLinks(r http.Response) bool {
 func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, chan error) {
 	c := make(chan VisitedUrl)
 	errChan := make(chan error)
+	dialTimeout := func(network, addr string) (net.Conn, error) {
+		return net.DialTimeout(network, addr, REQUEST_TIMEOUT*time.Second)
+	}
+	transport := http.Transport{Dial: dialTimeout}
+	client := http.Client{Transport: &transport}
+
 	go func() {
 		defer close(c)
 		defer close(errChan)
 		Trace.Printf("~~~~~~ trying %s\n", url.String())
-		res, err := http.Head(url.String())
+		res, err := client.Head(url.String())
 		linkedUrls := make(map[u.URL]bool)
 		if err != nil {
-			c <- VisitedUrl{url, fmt.Sprintf("Error:%s", err), linkedUrls}
+			c <- VisitedUrl{url, fmt.Sprintf("Error:%s", err), linkedUrls, true}
 			Error.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
 			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
+			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true}
 			Trace.Printf("HTTP status not OK %s (%d)\n", url.String(), res.StatusCode)
 			return
 		}
@@ -60,7 +70,7 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 				}
 			}
 		}
-		c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls}
+		c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, false}
 	}()
 	return c, errChan
 }
@@ -109,7 +119,7 @@ func searchPage(s Search) {
 func main() {
 	SetLogLevel(INFO)
 	urlString := flag.String("s", "http://esrlabs.com", "the URL of the site to check links")
-	parallel := flag.Int("p", 5, "number of parallel executions")
+	parallel := flag.Int("p", 15, "number of parallel executions")
 	flag.Parse()
 	url, err := u.Parse(*urlString)
 	if err != nil {
@@ -144,7 +154,11 @@ func main() {
 
 	go func() {
 		for v := range results {
-			Info.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
+			if v.HadProblems {
+				Warning.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
+			} else {
+				Info.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
+			}
 		}
 	}()
 

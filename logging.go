@@ -1,10 +1,12 @@
 package main
 
 import (
+	"github.com/fatih/color"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	// "strings"
 )
 
 var (
@@ -29,8 +31,22 @@ func SetLogLevel(level Level) {
 		InitLogging(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
 	case INFO:
 		InitLogging(ioutil.Discard, os.Stdout, os.Stdout, os.Stderr)
+	case WARN:
+		InitLogging(ioutil.Discard, ioutil.Discard, os.Stdout, os.Stderr)
+	case ERROR:
+		InitLogging(ioutil.Discard, ioutil.Discard, ioutil.Discard, os.Stderr)
 	default:
 	}
+}
+
+type ColoredWriter struct {
+	writer io.Writer
+	color  color.Color
+}
+
+func (cw ColoredWriter) Write(p []byte) (n int, err error) {
+	s := string(p[:])
+	return cw.writer.Write([]byte(cw.color.SprintfFunc()(s)))
 }
 
 func InitLogging(
@@ -39,17 +55,12 @@ func InitLogging(
 	warningHandle io.Writer,
 	errorHandle io.Writer) {
 
-	Trace = log.New(traceHandle,
-		"TRACE: ",
-		log.Ldate|log.Ltime|log.Lshortfile)
+	infoWriter := ColoredWriter{infoHandle, *color.New(color.FgGreen)}
+	warnWriter := ColoredWriter{warningHandle, *color.New(color.FgYellow)}
+	errorWriter := ColoredWriter{errorHandle, *color.New(color.FgRed)}
 
-	Info = log.New(infoHandle, "INFO: ", log.Ltime)
-
-	Warning = log.New(warningHandle,
-		"WARNING: ",
-		log.Ldate|log.Ltime|log.Lshortfile)
-
-	Error = log.New(errorHandle,
-		"ERROR: ",
-		log.Ldate|log.Ltime|log.Lshortfile)
+	Trace = log.New(traceHandle, "TRACE: ", log.Ldate|log.Ltime|log.Lshortfile)
+	Info = log.New(infoWriter, "INFO: ", log.Ltime)
+	Warning = log.New(warnWriter, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	Error = log.New(errorWriter, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
