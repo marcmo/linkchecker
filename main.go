@@ -14,12 +14,12 @@ import (
 	"time"
 )
 
-const REQUEST_TIMEOUT = 6
+const requestTimeout = 6 * time.Second
 
 var totalWorkItems int32 = 0
 
-type VisitedUrl struct {
-	Url         u.URL
+type VisitedURL struct {
+	query       Query
 	Status      string
 	LinkedUrls  map[u.URL]bool
 	HadProblems bool
@@ -34,11 +34,11 @@ func contentCanHaveLinks(r http.Response) bool {
 	return strings.Contains(r.Header["Content-Type"][0], "text/html")
 }
 
-func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, chan error) {
-	c := make(chan VisitedUrl)
+func collectLinks(query Query, checkDomain func(u.URL) bool) (chan VisitedURL, chan error) {
+	c := make(chan VisitedURL)
 	errChan := make(chan error)
 	dialTimeout := func(network, addr string) (net.Conn, error) {
-		return net.DialTimeout(network, addr, REQUEST_TIMEOUT*time.Second)
+		return net.DialTimeout(network, addr, requestTimeout)
 	}
 	transport := http.Transport{Dial: dialTimeout}
 	client := http.Client{Transport: &transport}
@@ -46,22 +46,22 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 	go func() {
 		defer close(c)
 		defer close(errChan)
-		Trace.Printf("~~~~~~ trying %s\n", url.String())
-		res, err := client.Head(url.String())
+		Trace.Printf("~~~~~~ trying %s\n", query.url.String())
+		res, err := client.Head(query.url.String())
 		linkedUrls := make(map[u.URL]bool)
 		if err != nil {
-			c <- VisitedUrl{url, fmt.Sprintf("Error:%s", err), linkedUrls, true}
-			Error.Printf("error occured during http.Head for %s:%s\n", url.String(), err)
+			c <- VisitedURL{query, fmt.Sprintf("Error:%s", err), linkedUrls, true}
+			Error.Printf("error occured during http.Head for %s:%s\n", query.url.String(), err)
 			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true}
-			Trace.Printf("HTTP status not OK %s (%d)\n", url.String(), res.StatusCode)
+			c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true}
+			Trace.Printf("HTTP status not OK %s (%d)\n", query.url.String(), res.StatusCode)
 			return
 		}
-		if checkDomain(url) && contentCanHaveLinks(*res) {
-			Trace.Printf("~~~~~~ crawling %s\n", url.String())
-			linkChan := GetAllLinks(url, errChan)
+		if checkDomain(query.url) && contentCanHaveLinks(*res) {
+			Trace.Printf("~~~~~~ crawling %s\n", query.url.String())
+			linkChan := GetAllLinks(query.url, errChan)
 			for e := range linkChan {
 				if !linkedUrls[e] {
 					linkedUrls[e] = true
@@ -70,15 +70,20 @@ func collectLinks(url u.URL, checkDomain func(u.URL) bool) (chan VisitedUrl, cha
 				}
 			}
 		}
-		c <- VisitedUrl{url, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, false}
+		c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, false}
 	}()
 	return c, errChan
 }
 
+type Query struct {
+	url    u.URL
+	origin string
+}
+
 type Search struct {
-	toQuery     <-chan u.URL      // pull next url to test from this channel
-	unfiltered  chan<- u.URL      // send all found links back
-	results     chan<- VisitedUrl // send all found links back
+	toQuery     <-chan Query      // pull next url to test from this channel
+	unfiltered  chan<- Query      // send all found links back
+	results     chan<- VisitedURL // send all found links back
 	quit        <-chan bool       // listen to when we should quit
 	domainCheck func(u.URL) bool
 	id          int
@@ -90,17 +95,17 @@ func searchPage(s Search) {
 	defer s.workerWg.Done()
 	for {
 		select {
-		case url, ok := <-s.toQuery:
+		case query, ok := <-s.toQuery:
 			if !ok {
 				return
 			}
-			Trace.Printf("[%d]..............searching %s\n", s.id, url.String())
-			testedChan, errChan := collectLinks(url, s.domainCheck)
+			Trace.Printf("[%d]..............searching %s\n", s.id, query.url.String())
+			testedChan, errChan := collectLinks(query, s.domainCheck)
 			select {
 			case t := <-testedChan:
 				for v := range t.LinkedUrls {
 					s.wg.Add(1)
-					s.unfiltered <- v
+					s.unfiltered <- Query{v, query.url.String()}
 					atomic.AddInt32(&totalWorkItems, -1)
 				}
 				s.results <- t
@@ -132,16 +137,16 @@ func main() {
 	Info.Printf("host:%s, ip: %s\n", url.Host, ip)
 
 	domainCheck := createDomainCheck(*url, ip)
-	toQuery := make(chan u.URL, 10000)
-	unfiltered := make(chan u.URL, 10000)
-	results := make(chan VisitedUrl)
+	toQuery := make(chan Query, 10000)
+	unfiltered := make(chan Query, 10000)
+	results := make(chan VisitedURL)
 	filteredResults := make(chan Result)
 	quit := make(chan bool)
 	var wg sync.WaitGroup
 	var workerWg sync.WaitGroup
 
 	wg.Add(1)
-	toQuery <- *url
+	toQuery <- Query{*url, ""}
 
 	workerWg.Add(*parallel)
 	for i := 0; i < *parallel; i++ {
@@ -154,11 +159,11 @@ func main() {
 
 	go func() {
 		for v := range results {
+			logFn := Info.Printf
 			if v.HadProblems {
-				Warning.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
-			} else {
-				Info.Printf("Checked: %s (%s)\n", v.Url.String(), v.Status)
+				logFn = Warning.Printf
 			}
+			logFn("Checked: %s (%s) (origin:%s)\n", v.query.url.String(), v.Status, v.query.origin)
 		}
 	}()
 
@@ -190,10 +195,10 @@ func createDomainCheck(url u.URL, ip []net.IP) func(u.URL) bool {
 	return domainCheck
 }
 
-func filterSeenResults(results <-chan VisitedUrl, filteredResults chan<- Result) {
+func filterSeenResults(results <-chan VisitedURL, filteredResults chan<- Result) {
 	var seen = make(map[Result]bool)
 	for v := range results {
-		r := Result{v.Url.String(), v.Status}
+		r := Result{v.query.url.String(), v.Status}
 		if !seen[r] {
 			seen[r] = true
 			filteredResults <- r
@@ -207,14 +212,14 @@ func removeParameters(url u.URL) string {
 	return url.Scheme + "://" + url.Host + url.Path
 }
 
-func filterNonRelevant(in <-chan u.URL, out chan<- u.URL, wg *sync.WaitGroup) {
+func filterNonRelevant(in <-chan Query, out chan<- Query, wg *sync.WaitGroup) {
 	var checked = make(map[string]bool)
 	for v := range in {
-		link := removeParameters(v)
+		link := removeParameters(v.url)
 		if !checked[link] {
 			checked[link] = true
 			out <- v
-			Trace.Printf(".........................added %s [host:%s]\n", v.String(), v.Host)
+			Trace.Printf(".........................added %s [host:%s]\n", v.url.String(), v.url.Host)
 		} else {
 			wg.Done() //already counted for, but we don't use it
 		}
