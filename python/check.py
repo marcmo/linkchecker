@@ -4,21 +4,19 @@ import sys, getopt, re
 import urllib2, httplib
 import logging
 from lxml import html
-from sets import Set
 from urlparse import urlparse
 
-logging.basicConfig(format='%(levelname)s:%(asctime)s %(message)s', datefmt='%I:%M:%S %p',level=logging.DEBUG)
-logging.addLevelName( logging.WARNING, "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
-logging.addLevelName( logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
+logging.basicConfig(format='%(levelname)s:%(asctime)s %(message)s', datefmt='%I:%M:%S %p', level=logging.DEBUG)
+logging.addLevelName(logging.WARNING, "\033[1;31m%s\033[1;0m" % logging.getLevelName(logging.WARNING))
+logging.addLevelName(logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
 
 class HeadRequest(urllib2.Request):
-     def get_method(self):
-         return "HEAD"
+    def get_method(self):
+        return "HEAD"
 
 def ping(url):
-    response = None
     try:
-        response = urllib2.urlopen(HeadRequest(url), timeout = 6)
+        response = urllib2.urlopen(HeadRequest(url), timeout=6)
         contentType = response.info()["Content-Type"]
         isText = True if re.match(r'text', contentType) else False
         return [response.getcode(), isText, response.geturl()]
@@ -50,24 +48,24 @@ def checkDomain(url, domain):
     return d.endswith(domain)
 
 def checkUrlRecursiv(starturl, domain):
-    links2check = {starturl : ''}
+    links2check = {starturl: ''}
     checked = {}
     while len(links2check) > 0:
-        (url,origin) = links2check.popitem()
+        (url, origin) = links2check.popitem()
         logging.info("[%d links to go] >>>>>>>>> checking: %s", len(links2check), url)
-        [status,isText,realurl] = ping(url)
-        checked[url] = (status,origin)
-        if (status >= 200 and status < 300):
+        [status, isText, realurl] = ping(url)
+        checked[url] = (status, origin)
+        if status >= 200 and status < 300:
             logging.info("%s is responding (origin:%s)[status %d]", url, origin, status)
             if checkDomain(url, domain) and isText:
                 links = getLinks(url)
                 for link in links:
-                    if not link in checked.keys():
+                    if link not in checked.keys():
                         links2check[link] = url
         else:
             if status != 0:
-                logging.error("[%s is responding (status %s)]",url, str(status))
-    for key, (s,o) in checked.iteritems():
+                logging.error("[%s is responding (status %s)]", url, str(status))
+    for key, (s, o) in checked.iteritems():
         logging.info("origin:%s --> %s (status:%s)", o, key, str(s))
 
 def usage():
@@ -77,7 +75,7 @@ def main(argv):
     starturl = ''
 
     try:
-        opts, args = getopt.getopt(argv,"hs:",["starturl="])
+        opts, args = getopt.getopt(argv, "hs:", ["starturl="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -92,5 +90,4 @@ def main(argv):
             checkUrlRecursiv(starturl, domain)
 
 if __name__ == "__main__":
-   main(sys.argv[1:])
-
+    main(sys.argv[1:])
