@@ -1,39 +1,41 @@
-import urllib2
-import httplib
 import logging
+import requests
 import re
 from urlparse import urlparse
 from lxml import html
 
-class HeadRequest(urllib2.Request):
-    def get_method(self):
-        return "HEAD"
-
 def ping(url):
     try:
-        response = urllib2.urlopen(HeadRequest(url), timeout=6)
-        contentType = response.info()["Content-Type"]
+        response = requests.request('HEAD', url, timeout=6.0)
+        contentType = response.headers['Content-Type']
         isText = True if re.match(r'text', contentType) else False
-        return [response.getcode(), isText, response.geturl()]
-    except urllib2.HTTPError, e:
-        return [e.code, False, None]
-    except urllib2.URLError, e:
-        logging.error(url + ' resulted in URLError = ' + str(e.reason))
-        return [str(e.reason), False, None]
-    except httplib.HTTPException, e:
-        logging.error(url + ' resulted in HTTPException')
-        return [e, False, None]
-    except Exception:
-        logging.error(url + ' resulted in Exception')
-        return [0, False, None]
+        return [response.status_code, isText, response.url]
+    except requests.exceptions.HTTPError as e:
+        logging.error(url + ' resulted in HTTPError')
+        return [str(e), False, None]
+    except requests.exceptions.Timeout:
+        logging.error(url + ' resulted in timeout')
+        return ['timeout', False, None]
+    except requests.exceptions.TooManyRedirects:
+        logging.error(url + ' too many redirects!')
+        return [300, False, None]
+    except requests.exceptions.ConnectionError, e:
+        logging.error(url + ' ConnectionError!')
+        return [str(e), False, None]
+    except requests.exceptions.RequestException as e:
+        logging.error(url + ' catastrophic error!! ' + str(e))
+        return [str(e), False, None]
 
 def getLinks(url):
     result = set()
-    page = html.fromstring(urllib2.urlopen(url).read())
-    for link in page.xpath("//a"):
-        href = link.get("href")
-        if href and href.startswith("http"):
-            result.add(href)
+    try:
+        page = html.fromstring(requests.get(url).text)
+        for link in page.xpath("//a"):
+            href = link.get("href")
+            if href and href.startswith("http"):
+                result.add(href)
+    except ValueError as e:
+        logging.error('ValueError when trying to parse ' + url + ': ' + str(e))
     return result
 
 def checkDomain(url, domain):

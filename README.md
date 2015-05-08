@@ -17,9 +17,9 @@ go-dependencies:
 
 ## Python-solution
 
-straight forward single-threaded solution
+straight forward concurrency, multi-threaded solution
 
 ### Example Usage
 
-    ./check.py -s http://esrlabs.com
+    ./check.py -s http://esrlabs.com -p 20
 
