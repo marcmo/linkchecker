@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+func removeParameters(url u.URL) string {
+	if url.Scheme == "" {
+		return url.String()
+	}
+	return url.Scheme + "://" + url.Host + url.Path
+}
+
 func stripInPageLink(s string) (*u.URL, error) {
 	noPageLinks := strings.Split(s, "#")[0]
 	_s := strings.Split(noPageLinks, "?")[0]
@@ -38,7 +45,7 @@ func GetAllLinks(url u.URL, errChan chan<- error) chan u.URL {
 					}
 					str := parsed.String()
 					if str != "" {
-						ref := *url.ResolveReference(parsed)
+						ref := *url.ResolveReference(parsed) //get absolute URL
 						if ref.Scheme == "http" || ref.Scheme == "https" {
 							Trace.Printf(" ===========> appending (now %d items) %s\n", totalWorkItems, ref.String())
 							linkChan <- ref

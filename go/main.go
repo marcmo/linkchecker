@@ -205,12 +205,6 @@ func filterSeenResults(results <-chan VisitedURL, filteredResults chan<- Result)
 		}
 	}
 }
-func removeParameters(url u.URL) string {
-	if url.Scheme == "" {
-		return url.String()
-	}
-	return url.Scheme + "://" + url.Host + url.Path
-}
 
 func filterNonRelevant(in <-chan Query, out chan<- Query, wg *sync.WaitGroup) {
 	var checked = make(map[string]bool)
