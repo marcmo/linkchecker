@@ -61,6 +61,6 @@ func InitLogging(
 
 	Trace = log.New(traceHandle, "TRACE: ", log.Ldate|log.Ltime|log.Lshortfile)
 	Info = log.New(infoWriter, "INFO: ", log.Ltime)
-	Warning = log.New(warnWriter, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	Warning = log.New(warnWriter, "WARNING: ", log.Ltime)
 	Error = log.New(errorWriter, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }

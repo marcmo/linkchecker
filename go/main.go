@@ -83,10 +83,10 @@ type Query struct {
 type Search struct {
 	toQuery     <-chan Query      // pull next url to test from this channel
 	unfiltered  chan<- Query      // send all found links back
-	results     chan<- VisitedURL // send all found links back
+	results     chan<- VisitedURL // add processed page to results
 	quit        <-chan bool       // listen to when we should quit
-	domainCheck func(u.URL) bool
-	id          int
+	domainCheck func(u.URL) bool  // check if the url should be queried further
+	id          int               // id of worker go routine
 	wg          *sync.WaitGroup
 	workerWg    *sync.WaitGroup
 }
@@ -115,7 +115,7 @@ func searchPage(s Search) {
 			}
 			s.wg.Done()
 		case <-s.quit:
-			fmt.Println("QUITTING")
+			fmt.Print("Q")
 			return
 		}
 	}
@@ -157,24 +157,28 @@ func main() {
 	go filterNonRelevant(unfiltered, toQuery, &wg)
 	go filterSeenResults(results, filteredResults)
 
+	checked, errors := 0, 0
 	go func() {
 		for v := range results {
+			checked = checked + 1
 			logFn := Info.Printf
 			if v.HadProblems {
 				logFn = Warning.Printf
+				errors = errors + 1
 			}
-			logFn("Checked: %s (%s) (origin:%s)\n", v.query.url.String(), v.Status, v.query.origin)
+			logFn("Checked[%d]: %s (%s) (origin:%s)\n", checked, v.query.url.String(), v.Status, v.query.origin)
 		}
 	}()
 
 	Info.Printf("waiting for queue...\n")
 	wg.Wait()
-	Info.Printf("queue done!!\n")
+	fmt.Printf("queue done!! %d pages checked, %d had problems (%d%%)\n", checked, errors, errors*100/checked)
 	for i := 0; i < *parallel; i++ {
 		quit <- true
 	}
 	Info.Printf("waiting for crunchers...\n")
 	workerWg.Wait()
+	fmt.Println("")
 	Info.Printf("crunchers done!!\n")
 	close(results)
 }
