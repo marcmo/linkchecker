@@ -9,7 +9,7 @@ import Control.Applicative
 import Text.Printf (printf)
 
 data LogJob = LogMsg String | LogDone
-data Result = Res String
+data Result = Res String | Ready
 
 data Task =
   Page {name :: String,
@@ -54,15 +54,18 @@ main = do
     atomically $ writeTChan jobQueue p
 
     let loop = do
-            (Res m, jobsDone) <- atomically $ (,) <$> readTChan results <*> isEmptyTChan jobQueue
-            logSync ("result was " ++ m ++ ", loop...") >> loop
-            if jobsDone then do
-              logSync "finishing workers..."
-              atomically $ replicateM_ k (writeTChan jobQueue Done)
-              waitFor activeWorkers
-              atomically $ (writeTChan logChannel LogDone)
-              waitFor activeLogging
-            else (logSync $ "more mainloop") >> loop
+            (r, jobsDone) <- atomically $ (,) <$> readTChan results <*> isEmptyTChan jobQueue
+            case r of
+              Res m -> logSync ("result was " ++ m ++ ", loop...") >> loop
+              Ready -> do
+                logSync "ready"
+                if jobsDone then do
+                  logSync "finishing workers..."
+                  atomically $ replicateM_ k (writeTChan jobQueue Done)
+                  waitFor activeWorkers
+                  atomically $ (writeTChan logChannel LogDone)
+                  waitFor activeLogging
+                else (logSync $ "more mainloop") >> loop
     loop
 
 logService :: TChan LogJob -> IO ()
@@ -94,9 +97,9 @@ worker logSync results jobQueue i = loop
             Done  -> return ()
             (Page n ls) -> do
               logSync (printf "received page %s" n)
-              atomically $ do
-                when (not $ null ls) $ mapM_ (writeTChan jobQueue) ls
-                writeTChan results (Res $ "checked " ++ n)
+              if (not . null) ls
+                then atomically $ mapM_ (writeTChan jobQueue) ls >> writeTChan results (Res $ "checked " ++ n)
+                else atomically $ writeTChan results (Ready)
               loop
 
 

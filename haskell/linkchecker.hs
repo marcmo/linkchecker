@@ -1,192 +1,221 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (catch, finally, SomeException)
+import Control.Exception (finally, handle, SomeException)
 import Control.Monad.Error
-import Control.Monad.State
 import Control.Applicative
+import Data.List(stripPrefix)
+import qualified Data.Map as M
 import qualified Data.Set as S
-import Data.Maybe(catMaybes)
+import Data.Maybe(mapMaybe, fromJust)
 import Network.URI
+import Network.HTTP.Client(HttpException(..))
 import Text.HTML.TagSoup
 import Network.Wreq
 import Control.Lens
 import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Char8 as BS
 
-import System.IO (hFlush, stdout)
 import Text.Printf (printf)
 
-extractLinks :: B.ByteString -> B.ByteString -> S.Set B.ByteString
+handleAny :: (SomeException -> IO a) -> IO a -> IO a
+handleAny = handle
+
+data LogJob = LogMsg String | LogDone
+data LinkResult = OK String | LinkError String | FormatError String deriving (Show,Eq)
+type Result = M.Map URL [(URL,LinkResult)]
+type Logging = String -> IO ()
+type URL = B.ByteString
+maxredirects = 4
+
+data Task = Page {orign :: URL, name :: URL} | Done
+  deriving (Eq,Show)
+
+extractLinks :: URI -> B.ByteString -> S.Set URL
 extractLinks url = S.fromList .
-            catMaybes .
-            map (canonicalizeLink url) .
+            mapMaybe (canonicalizeLink url) .
             filter (not . B.null) .
             map (fromAttrib "href") .
             filter (isTagOpenName "a") .
             canonicalizeTags .
             parseTags
 
-canonicalizeLink :: B.ByteString -> B.ByteString -> Maybe B.ByteString
-canonicalizeLink referer _path = do
-  r <- parseURI (B.unpack referer)
-  p <- parseURIReference (B.unpack _path)
-  let n = p `nonStrictRelativeTo` r
-  return (B.takeWhile (/= '#') (B.pack $ uriToString id n ""))
+canonicalizeLink :: URI -> URL -> Maybe URL
+canonicalizeLink referer _path =
+  if "#" `B.isPrefixOf` _path then Nothing
+    else do
+      p <- parseURIReference (B.unpack _path)
+      let n = p `nonStrictRelativeTo` referer
+      _auth <- uriAuthority n
+      let res = uriScheme n ++ "//" ++ uriUserInfo _auth ++ uriRegName _auth ++ uriPort _auth ++ uriPath n
+      let res' = if last res == '/' then take (length res - 1) res else res
+      return $  B.pack res'
 
-type URL = B.ByteString
+belongsTo :: URL -> URL -> Bool
+belongsTo url host =
+  isRelativeReference (B.unpack url) || regName url == regName host
+regName :: B.ByteString -> Maybe String
+regName u = do
+  uri <- parseURI (B.unpack u)
+  a <- uriAuthority uri
+  return $ removeWWW (uriRegName a)
+-- regName u = uriRegName <$> (removeWWW >>= parseURI (B.unpack u) >>= uriAuthority)
+removeWWW :: String -> String
+removeWWW u = case (stripPrefix "www." u) of
+  Just r -> r
+  Nothing -> u
 
-data Task = Check URL | Done
+pingUrl :: URI -> IO (Either String Int)
+pingUrl u = handle handler $ do
+          let opts = defaults & redirects .~ maxredirects
+          resp <- headWith opts (show u)
+          return $ Right (resp ^. responseStatus . statusCode)
+      where handler (StatusCodeException s _ _) = return (Left $ "StatusCodeException: " ++ show s)
+            handler e = return (Left $ "not possible to ping " ++ show u ++ show e)
 
+getContentType :: URI -> IO (Either String (BS.ByteString))
+getContentType u =
+      handleAny (\_ -> return (Left $ "no content type available for " ++ show u)) $ do
+          let opts = defaults & redirects .~ maxredirects
+          resp <- headWith opts (show u)
+          return $ Right (resp ^. responseHeader "Content-Type")
+
+getBody :: URI -> IO (Either String B.ByteString)
+getBody u = do
+      let opts = defaults & redirects .~ maxredirects
+      resp <- getWith opts (show u)
+      return $ Right (resp ^. responseBody)
+
+getLinksFromUrl :: URI -> IO (Either String (S.Set URL))
+getLinksFromUrl uri = do
+        b <- getBody uri
+        case b of
+          Left e -> return $ Left e
+          Right content -> do
+            let eitherLs = extractLinks uri content
+            return $ Right eitherLs
+
+baseUrl = "http://esrlabs.com"
+-- baseUrl = "http://bit.ly/1ePILXw"
+baseUri = fromJust $ parseURI (B.unpack baseUrl)
+
+-- baseUrl = "1"
 main = do
-    let url = "http://esrlabs.com"
-    case parseURI (B.unpack url) of
-        Just uri -> do
-            (Right code) <- getStatus uri `catch` \e -> (return . Left . show) (e :: SomeException)
-            if code == 200 then
-              do (Right page) <- getPage uri
-                 print $ extractLinks url page
-            else print "not code 200"
-            print code
-        Nothing -> print "nothing..."
+    results <- atomically newEmptyTMVar
+    jobQueue <- newTQueueIO
+    logChannel <- newTQueueIO
 
-main2 = do
-    -- count of broken links
-    badCount <- newTVarIO (0 :: Int)
+    seen <- atomically $ newTVar (S.singleton baseUrl :: S.Set URL)
+    activeLogging <- atomically $ newTVar 1
+    _ <- forkIO $ logService logChannel `finally`
+        atomically (modifyTVar activeLogging (subtract 1))
 
-    -- for reporting broken links
-    badLinks <- newTChanIO
+    let logSync s = atomically $ writeTQueue logChannel (LogMsg s)
 
-    -- for sending jobs to workers
-    jobs <- newTChanIO
-
-    let k = 2
+    let k = 50
     -- the number of workers currently running
-    workers <- newTVarIO k
+    runningWorkers <- atomically $ newTVar k
+    activeCount <- atomically $ newTVar 0
 
-    -- one thread reports bad links to stdout
-    _ <- forkIO $ writeBadLinks badLinks
-
+    logSync (printf "start %d threads...\n" k)
     -- start worker threads
-    forkTimes k workers (worker badLinks jobs badCount)
+    forM_ [1..k] $ \n -> forkIO $
+      worker logSync results jobQueue seen n activeCount
+      `finally`
+      atomically (modifyTVar runningWorkers (subtract 1))
 
-    -- read links from files, and enqueue them as jobs
-    stats <- execJob (checkURLs "http://httpbin.org")
-                     (JobState S.empty 0 jobs)
+    -- add element to queue
+    atomically $ writeTQueue jobQueue (Page "" baseUrl)
 
-    -- enqueue "please finish" messages
-    atomically $ replicateM_ k (writeTChan jobs Done)
+    let mainloop rs = do
+          (r, jobsDone) <- atomically $ (,) <$> takeTMVar results <*> isEmptyTQueue jobQueue
+          let rs' = r:rs
+          if not jobsDone then mainloop rs'
+            else do
+              activeC <- readTVarIO activeCount
+              if activeC /= 0 then mainloop rs'
+                else do
+                  logSync "=============> finishing workers..."
+                  atomically $ replicateM_ k (writeTQueue jobQueue Done)
+                  waitFor runningWorkers
+                  atomically $ writeTQueue logChannel LogDone
+                  waitFor activeLogging
+                  print "++++ results ++++"
+                  forM_ (zip [1..] (reverse rs')) $ \(i,r') ->
+                    printf "%s: %s\n" (show i) (show r')
 
-    waitFor workers
+    mainloop []
 
-    broken <- atomically $ readTVar badCount
-    printf "Found %d broken links. Checked %d links (%d unique).\n"
-              broken
-              (linksFound stats)
-              (S.size (linksSeen stats))
-
-forkTimes :: Int -> TVar Int -> IO () -> IO ()
-forkTimes k alive act =
-  replicateM_ k . forkIO $
-    act
-    `finally`
-    (atomically $ modifyTVar alive (subtract 1))
-
-writeBadLinks :: TChan String -> IO ()
-writeBadLinks c =
-  forever $
-    atomically (readTChan c) >>= putStrLn >> hFlush stdout
+logService :: TQueue LogJob -> IO ()
+-- logService c = return ()
+logService c = loop
+  where loop = do
+          x <- atomically $ readTQueue c
+          case x of
+            LogMsg m -> putStrLn m >> loop
+            LogDone -> void $ putStrLn "done logging!"
 
 waitFor :: TVar Int -> IO ()
 waitFor alive = atomically $ do
   count <- readTVar alive
   check (count == 0)
 
-getStatus :: URI -> IO (Either String Int)
-getStatus u = do
-      print $ "getStatus of " ++ show u
-      let opts = defaults & redirects .~ 4
-      let url = show u
-      resp <- headWith opts url
-      let respCode = resp ^. responseStatus . statusCode
-      return $ Right respCode
+addIfPossible :: TVar (S.Set URL) -> URL -> STM Bool
+addIfPossible seen link = do
+  seenLinks <- readTVar seen
+  if link `S.member` seenLinks
+    then return False
+    else writeTVar seen (link `S.insert` seenLinks) >> return True
 
-getPage :: URI -> IO (Either String B.ByteString)
-getPage u = do
-      print $ "getPage of " ++ show u
-      let opts = defaults & redirects .~ 4
-      let url = show u
-      resp <- getWith opts url
-      let body = resp ^. responseBody
-      return $ Right body
 
-worker :: TChan String -> TChan Task -> TVar Int -> IO ()
-worker badLinks jobQueue badCount = loop
-  where
-    -- Consume jobs until we are told to exit.
-    loop = do
-        job <- atomically $ readTChan jobQueue
-        print "[worker] consuming another job"
-        case job of
-            Done  -> return ()
-            Check x -> checkOne (B.unpack x) >> loop
-
-    -- Check a single link.
-    checkOne url = case parseURI url of
-        Just uri -> do
-            code <- getStatus uri `catch` \e -> (return . Left . show) (e :: SomeException)
-            case code of
-                Right 200 -> return ()
-                Right n   -> report (show n)
-                Left err  -> report err
-        _ -> report "invalid URL"
-
-        where report s = atomically $ do
-                           modifyTVar badCount (+1)
-                           writeTChan badLinks (url ++ " " ++ s)
-
-data JobState = JobState { linksSeen :: S.Set URL,
-                           linksFound :: Int,
-                           linkQueue :: TChan Task }
-
-newtype Job a = Job { runJob :: StateT JobState IO a }
-    deriving (Monad, MonadState JobState, MonadIO)
-
-instance Functor Job where
-    fmap = liftM
-instance Applicative Job where
-    pure  = return
-    (<*>) = ap
-
-execJob :: Job a -> JobState -> IO JobState
-execJob = execStateT . runJob
-
-checkURLs :: B.ByteString -> Job ()
-checkURLs url = do
-    let urls = [url]
-    filterM seenURI urls >>= sendJobs
-    updateStats (length urls)
-
-updateStats :: Int -> Job ()
-updateStats a = modify $ \s ->
-    s { linksFound = linksFound s + a }
-
--- | Add a link to the set we have seen.
-insertURI :: URL -> Job ()
-insertURI c = modify $ \s ->
-    s { linksSeen = S.insert c (linksSeen s) }
-
--- | If we have seen a link, return False.  Otherwise, record that we
--- have seen it, and return True.
-seenURI :: URL -> Job Bool
-seenURI url = do
-    seen <- (not . S.member url) `liftM` gets linksSeen
-    insertURI url
-    return seen
-
-sendJobs :: [URL] -> Job ()
-sendJobs js = do
-    c <- gets linkQueue
-    liftIO . atomically $ mapM_ (writeTChan c . Check) js
+worker :: Logging ->
+          TMVar LinkResult ->
+          TQueue Task ->
+          TVar (S.Set URL) ->
+          Int ->
+          TVar Int ->
+          IO ()
+worker logSync results jobQueue seen i activeCount = loop
+    where
+      -- Consume jobs until we are told to exit.
+      loop :: IO ()
+      loop = handleAny (\e -> do
+        atomically $ putTMVar results (LinkError $ "Got an exception: " ++ show e)
+            >> modifyTVar activeCount (subtract 1)
+        return ()) $ do
+          job <- atomically $ modifyTVar activeCount (+1) >> readTQueue jobQueue
+          let report e = putTMVar results e >> modifyTVar activeCount (subtract 1)
+          case job of
+              Done  -> do
+                logSync (printf "SHUTDOWN")
+                atomically $ modifyTVar activeCount (subtract 1)
+                return ()
+              (Page orig url) -> do
+                logSync (printf "[worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
+                case parseURI (B.unpack url) of
+                  Nothing -> atomically $ report (FormatError ("invalid URL:" ++ B.unpack url))
+                  Just uri -> do
+                    ping <- pingUrl uri
+                    case ping of
+                      Left e -> atomically $ report (LinkError e)
+                      Right code -> do
+                        r <- getContentType uri
+                        case r of
+                          Left e -> atomically $ report (LinkError e)
+                          (Right contentType)
+                            | code /= 200 -> atomically $ report (LinkError $ "HTML Error " ++ show code)
+                            | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
+                                  eitherLs <- getLinksFromUrl uri
+                                  case eitherLs of
+                                    Left m -> atomically $ report (LinkError m)
+                                    Right ls -> do
+                                      let cleanedLinks = mapMaybe (canonicalizeLink baseUri) (S.toList ls)
+                                      atomically $ do
+                                        newLinks <- filterM (addIfPossible seen) cleanedLinks
+                                        report (OK $ printf "worker%d checked:%s (%d new links)" i (B.unpack url) (length newLinks))
+                                        mapM_ (writeTQueue jobQueue . Page url) newLinks
+                            | otherwise -> atomically $ report (OK $ "stopping at " ++ B.unpack url)
+                loop
 
 

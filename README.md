@@ -23,3 +23,13 @@ straight forward concurrency, multi-threaded solution
 
     ./check.py -s http://esrlabs.com -p 20
 
+## Haskell-solution
+
+using STM for all concurrency
+
+### Example Usage
+
+    $ cd haskell
+    $ cabal build
+    $ cabal run
+
