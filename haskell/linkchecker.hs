@@ -13,6 +13,7 @@ import Network.URI
 import Network.HTTP.Client(HttpException(..))
 import Text.HTML.TagSoup
 import Network.Wreq
+import qualified Network.Wreq.Session as Sess
 import Control.Lens
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.ByteString.Char8 as BS
@@ -32,61 +33,6 @@ maxredirects = 4
 data Task = Page {orign :: URL, name :: URL} | Done
   deriving (Eq,Show)
 
-extractLinks :: URI -> B.ByteString -> S.Set URL
-extractLinks url = S.fromList .
-            mapMaybe (canonicalizeLink url) .
-            filter (not . B.null) .
-            map (fromAttrib "href") .
-            filter (isTagOpenName "a") .
-            canonicalizeTags .
-            parseTags
-
-canonicalizeLink :: URI -> URL -> Maybe URL
-canonicalizeLink referer _path =
-  if "#" `B.isPrefixOf` _path then Nothing
-    else do
-      p <- parseURIReference (B.unpack _path)
-      let n = p `nonStrictRelativeTo` referer
-      _auth <- uriAuthority n
-      let res = uriScheme n ++ "//" ++ uriUserInfo _auth ++ uriRegName _auth ++ uriPort _auth ++ uriPath n
-      let res' = if last res == '/' then take (length res - 1) res else res
-      return $  B.pack res'
-
-belongsTo :: URL -> URL -> Bool
-belongsTo url host =
-  isRelativeReference (B.unpack url) || regName url == regName host
-  where regName u = (removeWWW . uriRegName) <$> (parseURI (B.unpack u) >>= uriAuthority)
-        removeWWW u = fromMaybe u (stripPrefix "www." u)
-
-pingUrl :: URI -> IO (Either String (Int, BS.ByteString))
-pingUrl u = handle handler $ do
-          let opts = defaults & redirects .~ maxredirects
-          resp <- headWith opts (show u)
-          return $ Right (resp ^. responseStatus . statusCode, resp ^. responseHeader "Content-Type")
-      where handler (StatusCodeException s _ _) = return (Left $ "StatusCodeException: " ++ show s)
-            handler e = return (Left $ "not possible to ping " ++ show u ++ show e)
-
-getContentType :: URI -> IO (Either String BS.ByteString)
-getContentType u =
-      handleAny (\_ -> return (Left $ "no content type available for " ++ show u)) $ do
-          let opts = defaults & redirects .~ maxredirects
-          resp <- headWith opts (show u)
-          return $ Right (resp ^. responseHeader "Content-Type")
-
-getBody :: URI -> IO (Either String B.ByteString)
-getBody u = do
-      let opts = defaults & redirects .~ maxredirects
-      resp <- getWith opts (show u)
-      return $ Right (resp ^. responseBody)
-
-getLinksFromUrl :: URI -> IO (Either String (S.Set URL))
-getLinksFromUrl uri = do
-        b <- getBody uri
-        case b of
-          Left e -> return $ Left e
-          Right content -> do
-            let eitherLs = extractLinks uri content
-            return $ Right eitherLs
 
 baseUrl = "http://esrlabs.com"
 baseUri = fromJust $ parseURI (B.unpack baseUrl)
@@ -168,40 +114,89 @@ worker :: Logging ->
           IO ()
 worker logSync results jobQueue seen i activeCount = loop
     where
+      report :: LinkResult -> STM ()
+      report e = putTMVar results e >> modifyTVar activeCount (subtract 1)
       -- Consume jobs until we are told to exit.
       loop :: IO ()
       loop = handleAny (\e -> do
-        atomically $ putTMVar results (LinkError $ "Got an exception: " ++ show e)
-            >> modifyTVar activeCount (subtract 1)
+        atomically $ report (LinkError $ "Got an exception: " ++ show e)
         return ()) $ do
           job <- atomically $ modifyTVar activeCount (+1) >> readTQueue jobQueue
-          let report e = putTMVar results e >> modifyTVar activeCount (subtract 1)
           case job of
-              Done  -> do
+              Done -> do
                 logSync (printf "SHUTDOWN")
                 atomically $ modifyTVar activeCount (subtract 1)
                 return ()
               (Page orig url) -> do
                 logSync (printf "[worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
-                case parseURI (B.unpack url) of
-                  Nothing -> atomically $ report (FormatError ("invalid URL:" ++ B.unpack url))
-                  Just uri -> do
-                    ping <- pingUrl uri
-                    case ping of
-                      Left e -> atomically $ report (LinkError e)
-                      Right (code, contentType)
-                            | code /= 200 -> atomically $ report (LinkError $ "HTML Error " ++ show code)
-                            | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
-                                  eitherLs <- getLinksFromUrl uri
-                                  case eitherLs of
-                                    Left m -> atomically $ report (LinkError m)
-                                    Right ls -> do
-                                      let cleanedLinks = mapMaybe (canonicalizeLink baseUri) (S.toList ls)
-                                      atomically $ do
-                                        newLinks <- filterM (addIfPossible seen) cleanedLinks
-                                        report (OK $ printf "worker%d checked:%s (%d new links)" i (B.unpack url) (length newLinks))
-                                        mapM_ (writeTQueue jobQueue . Page url) newLinks
-                            | otherwise -> atomically $ report (OK $ "stopping at " ++ B.unpack url)
+                eitherLs <- getLinks url
+                case eitherLs of
+                  Left m -> atomically $ report m
+                  Right ls -> do
+                    let cleanedLinks = mapMaybe (canonicalizeLink baseUri) (S.toList ls)
+                    newLinks <- atomically $ filterM (addIfPossible seen) cleanedLinks
+                    atomically $ do
+                      report (OK $ printf "worker%d checked:%s (%d new links)" i (B.unpack url) (length newLinks))
+                      mapM_ (writeTQueue jobQueue . Page url) newLinks
                 loop
 
+getLinks :: URL -> IO (Either LinkResult (S.Set URL))
+getLinks url =
+      case parseURI (B.unpack url) of
+        Nothing -> return $ Left (FormatError ("invalid URL:" ++ B.unpack url))
+        Just uri -> Sess.withSession $ \sess -> do
+          ping <- pingUrl sess uri
+          case ping of
+            Left e -> return $ Left (LinkError e)
+            Right (code, contentType)
+                  | code /= 200 -> return $ Left (LinkError $ "HTML Error " ++ show code)
+                  | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
+                    eitherLs <- getLinksFromUrl sess uri
+                    case eitherLs of
+                      Left s -> return $ Left (LinkError s)
+                      Right ls -> return $ Right ls
+                  | otherwise -> return $ Left (OK $ "stopping at " ++ show uri)
+
+pingUrl :: Sess.Session -> URI -> IO (Either String (Int, BS.ByteString))
+pingUrl sess u = handle handler $ do
+          let opts = defaults & redirects .~ maxredirects
+          resp <- Sess.headWith opts sess (show u)
+          return $ Right (resp ^. responseStatus . statusCode, resp ^. responseHeader "Content-Type")
+      where handler (StatusCodeException s _ _) = return (Left $ "StatusCodeException: " ++ show s)
+            handler e = return (Left $ "not possible to ping " ++ show u ++ show e)
+
+getBody :: Sess.Session -> URI -> IO (Either String B.ByteString)
+getBody sess u = do
+      let opts = defaults & redirects .~ maxredirects
+      resp <- Sess.getWith opts sess (show u)
+      return $ Right (resp ^. responseBody)
+
+getLinksFromUrl :: Sess.Session -> URI -> IO (Either String (S.Set URL))
+getLinksFromUrl sess uri = getBody sess uri >>= \b -> return $ extractLinks uri <$> b
+
+extractLinks :: URI -> B.ByteString -> S.Set URL
+extractLinks url = S.fromList .
+            mapMaybe (canonicalizeLink url) .
+            filter (not . B.null) .
+            map (fromAttrib "href") .
+            filter (isTagOpenName "a") .
+            canonicalizeTags .
+            parseTags
+
+canonicalizeLink :: URI -> URL -> Maybe URL
+canonicalizeLink referer _path =
+  if "#" `B.isPrefixOf` _path then Nothing
+    else do
+      p <- parseURIReference (B.unpack _path)
+      let n = p `nonStrictRelativeTo` referer
+      _auth <- uriAuthority n
+      let res = uriScheme n ++ "//" ++ uriUserInfo _auth ++ uriRegName _auth ++ uriPort _auth ++ uriPath n
+      let res' = if last res == '/' then take (length res - 1) res else res
+      return $  B.pack res'
+
+belongsTo :: URL -> URL -> Bool
+belongsTo url host =
+  isRelativeReference (B.unpack url) || regName url == regName host
+  where regName u = (removeWWW . uriRegName) <$> (parseURI (B.unpack u) >>= uriAuthority)
+        removeWWW u = fromMaybe u (stripPrefix "www." u)
 
