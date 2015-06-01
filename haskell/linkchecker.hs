@@ -8,7 +8,7 @@ import Control.Applicative
 import Data.List(stripPrefix)
 import qualified Data.Map as M
 import qualified Data.Set as S
-import Data.Maybe(mapMaybe, fromJust)
+import Data.Maybe(mapMaybe, fromJust, fromMaybe)
 import Network.URI
 import Network.HTTP.Client(HttpException(..))
 import Text.HTML.TagSoup
@@ -55,26 +55,18 @@ canonicalizeLink referer _path =
 belongsTo :: URL -> URL -> Bool
 belongsTo url host =
   isRelativeReference (B.unpack url) || regName url == regName host
-regName :: B.ByteString -> Maybe String
-regName u = do
-  uri <- parseURI (B.unpack u)
-  a <- uriAuthority uri
-  return $ removeWWW (uriRegName a)
--- regName u = uriRegName <$> (removeWWW >>= parseURI (B.unpack u) >>= uriAuthority)
-removeWWW :: String -> String
-removeWWW u = case (stripPrefix "www." u) of
-  Just r -> r
-  Nothing -> u
+  where regName u = (removeWWW . uriRegName) <$> (parseURI (B.unpack u) >>= uriAuthority)
+        removeWWW u = fromMaybe u (stripPrefix "www." u)
 
-pingUrl :: URI -> IO (Either String Int)
+pingUrl :: URI -> IO (Either String (Int, BS.ByteString))
 pingUrl u = handle handler $ do
           let opts = defaults & redirects .~ maxredirects
           resp <- headWith opts (show u)
-          return $ Right (resp ^. responseStatus . statusCode)
+          return $ Right (resp ^. responseStatus . statusCode, resp ^. responseHeader "Content-Type")
       where handler (StatusCodeException s _ _) = return (Left $ "StatusCodeException: " ++ show s)
             handler e = return (Left $ "not possible to ping " ++ show u ++ show e)
 
-getContentType :: URI -> IO (Either String (BS.ByteString))
+getContentType :: URI -> IO (Either String BS.ByteString)
 getContentType u =
       handleAny (\_ -> return (Left $ "no content type available for " ++ show u)) $ do
           let opts = defaults & redirects .~ maxredirects
@@ -97,10 +89,8 @@ getLinksFromUrl uri = do
             return $ Right eitherLs
 
 baseUrl = "http://esrlabs.com"
--- baseUrl = "http://bit.ly/1ePILXw"
 baseUri = fromJust $ parseURI (B.unpack baseUrl)
 
--- baseUrl = "1"
 main = do
     results <- atomically newEmptyTMVar
     jobQueue <- newTQueueIO
@@ -199,11 +189,7 @@ worker logSync results jobQueue seen i activeCount = loop
                     ping <- pingUrl uri
                     case ping of
                       Left e -> atomically $ report (LinkError e)
-                      Right code -> do
-                        r <- getContentType uri
-                        case r of
-                          Left e -> atomically $ report (LinkError e)
-                          (Right contentType)
+                      Right (code, contentType)
                             | code /= 200 -> atomically $ report (LinkError $ "HTML Error " ++ show code)
                             | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
                                   eitherLs <- getLinksFromUrl uri
