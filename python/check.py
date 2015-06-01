@@ -57,7 +57,7 @@ def usage():
 
 def main(argv):
     starturl="http://httpbin.org/"
-    threadCount=1
+    threadCount=20
 
     try:
         opts, args = getopt.getopt(argv, "hs:p:", ["starturl=","threads="])
