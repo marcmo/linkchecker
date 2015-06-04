@@ -48,6 +48,7 @@ executable linkcheck
                       mtl,
                       HTTP,
                       http-client,
+                      http-types,
                       wreq,
                       lens,
                       random

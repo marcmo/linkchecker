@@ -2,7 +2,8 @@
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
-import Control.Exception (finally, handle, SomeException)
+import Control.Exception (finally, handle, SomeException(..))
+import Data.Typeable ( typeOf )
 import Control.Monad.Error
 import Control.Applicative
 import Data.List(stripPrefix)
@@ -11,6 +12,7 @@ import qualified Data.Set as S
 import Data.Maybe(mapMaybe, fromJust, fromMaybe)
 import Network.URI
 import Network.HTTP.Client(HttpException(..))
+import qualified Network.HTTP.Types.Status as Status
 import Text.HTML.TagSoup
 import Network.Wreq
 import qualified Network.Wreq.Session as Sess
@@ -24,7 +26,7 @@ handleAny :: (SomeException -> IO a) -> IO a -> IO a
 handleAny = handle
 
 data LogJob = LogMsg String | LogDone
-data LinkResult = OK String | LinkError String | FormatError String deriving (Show,Eq)
+data LinkResult = OK (URL,String) | LinkError (URL,String) | FormatError (URL,String) deriving (Show,Eq)
 type Result = M.Map URL [(URL,LinkResult)]
 type Logging = String -> IO ()
 type URL = B.ByteString
@@ -78,10 +80,14 @@ main = do
                   atomically $ writeTQueue logChannel LogDone
                   waitFor activeLogging
                   print "++++ results ++++"
-                  forM_ (zip [1..] (reverse rs')) $ \(i,r') ->
-                    printf "%s: %s\n" (show i) (show r')
+                  mapM_ reportResult (zip [1..] (reverse rs'))
 
     mainloop []
+
+reportResult :: (Int, LinkResult) -> IO ()
+reportResult (i, OK (u,s)) = printf "%d: %s [200] (%s)\n" i (B.unpack u) s
+reportResult (i, LinkError (u,s)) = printf "%d: %s %s\n" i (B.unpack u) s
+reportResult (i, FormatError (u,s)) = printf "%d: %s FormatError (%s)\n" i (B.unpack u) s
 
 logService :: TQueue LogJob -> IO ()
 -- logService c = return ()
@@ -119,7 +125,7 @@ worker logSync results jobQueue seen i activeCount = loop
       -- Consume jobs until we are told to exit.
       loop :: IO ()
       loop = handleAny (\e -> do
-        atomically $ report (LinkError $ "Got an exception: " ++ show e)
+        atomically $ report (LinkError $ (B.empty, "[worker" ++ show i ++ "] Got an exception: " ++ show e))
         return ()) $ do
           job <- atomically $ modifyTVar activeCount (+1) >> readTQueue jobQueue
           case job of
@@ -128,7 +134,7 @@ worker logSync results jobQueue seen i activeCount = loop
                 atomically $ modifyTVar activeCount (subtract 1)
                 return ()
               (Page orig url) -> do
-                logSync (printf "[worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
+                logSync (printf "---> [worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
                 eitherLs <- getLinks url
                 case eitherLs of
                   Left m -> atomically $ report m
@@ -136,34 +142,37 @@ worker logSync results jobQueue seen i activeCount = loop
                     let cleanedLinks = mapMaybe (canonicalizeLink baseUri) (S.toList ls)
                     newLinks <- atomically $ filterM (addIfPossible seen) cleanedLinks
                     atomically $ do
-                      report (OK $ printf "worker%d checked:%s (%d new links)" i (B.unpack url) (length newLinks))
+                      report (OK $ (url,printf "checked [worker%d] (%d new links)" i (length newLinks)))
                       mapM_ (writeTQueue jobQueue . Page url) newLinks
                 loop
 
 getLinks :: URL -> IO (Either LinkResult (S.Set URL))
 getLinks url =
       case parseURI (B.unpack url) of
-        Nothing -> return $ Left (FormatError ("invalid URL:" ++ B.unpack url))
+        Nothing -> return $ Left (FormatError (url,"invalid URL"))
         Just uri -> Sess.withSession $ \sess -> do
           ping <- pingUrl sess uri
           case ping of
-            Left e -> return $ Left (LinkError e)
-            Right (code, contentType)
-                  | code /= 200 -> return $ Left (LinkError $ "HTML Error " ++ show code)
+            Left e -> return $ Left (LinkError (url,e))
+            Right contentType
                   | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
                     eitherLs <- getLinksFromUrl sess uri
                     case eitherLs of
-                      Left s -> return $ Left (LinkError s)
+                      Left s -> return $ Left (LinkError (url,s))
                       Right ls -> return $ Right ls
-                  | otherwise -> return $ Left (OK $ "stopping at " ++ show uri)
+                  | otherwise -> return $ Left (OK $ (url,"STOPPING"))
 
-pingUrl :: Sess.Session -> URI -> IO (Either String (Int, BS.ByteString))
-pingUrl sess u = handle handler $ do
-          let opts = defaults & redirects .~ maxredirects
-          resp <- Sess.headWith opts sess (show u)
-          return $ Right (resp ^. responseStatus . statusCode, resp ^. responseHeader "Content-Type")
-      where handler (StatusCodeException s _ _) = return (Left $ "StatusCodeException: " ++ show s)
-            handler e = return (Left $ "not possible to ping " ++ show u ++ show e)
+pingUrl :: Sess.Session -> URI -> IO (Either String (BS.ByteString))
+pingUrl sess u =
+    handleAny anyHandler $ do
+        handle handler $ do
+            let opts = defaults & redirects .~ maxredirects
+            resp <- Sess.headWith opts sess (show u)
+            return $ Right (resp ^. responseHeader "Content-Type")
+        where handler (StatusCodeException s _ _) = return (Left $ printf "[%d] StatusCodeException: %s"
+                                                      (Status.statusCode s) (BS.unpack $ Status.statusMessage s))
+              handler e = return (Left $ "not possible to ping " ++ show e)
+              anyHandler e = return (Left $ "exception happended " ++ show (typeOf e))
 
 getBody :: Sess.Session -> URI -> IO (Either String B.ByteString)
 getBody sess u = do
