@@ -28,10 +28,7 @@ executable profiling-linkcheck
                       tagsoup,
                       stm,
                       mtl,
-                      HTTP,
                       http-client,
-                      wreq,
-                      lens,
                       random
   default-language:   Haskell2010
 executable linkcheck
@@ -43,14 +40,13 @@ executable linkcheck
                       containers,
                       bytestring,
                       network-uri,
+                      network,
                       tagsoup,
                       stm,
                       mtl,
-                      HTTP,
                       http-client,
+                      http-client-tls,
                       http-types,
-                      wreq,
-                      lens,
                       random
   -- hs-source-dirs:
   default-language:   Haskell2010
