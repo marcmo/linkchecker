@@ -113,7 +113,6 @@ addIfPossible seen link = do
     then return False
     else writeTVar seen (link `S.insert` seenLinks) >> return True
 
-
 worker :: Manager ->
           Logging ->
           TMVar LinkResult ->
