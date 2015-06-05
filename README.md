@@ -30,6 +30,8 @@ using STM for all concurrency
 ### Example Usage
 
     $ cd haskell
-    $ cabal build
-    $ cabal run
+    $ cabal sandbox init
+    $ cabal install --only-dependencies
+    $ cabal build linkcheck
+    $ cabal run linkcheck
 
