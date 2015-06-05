@@ -18,17 +18,20 @@ executable profiling-linkcheck
   main-is: linkchecker.hs
   ghc-options:
     -threaded
-    -fprof
+    -prof
     -fprof-auto
     -rtsopts
   build-depends:      base,
                       containers,
                       bytestring,
                       network-uri,
+                      network,
                       tagsoup,
                       stm,
                       mtl,
                       http-client,
+                      http-client-tls,
+                      http-types,
                       random
   default-language:   Haskell2010
 executable linkcheck
