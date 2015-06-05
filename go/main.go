@@ -137,10 +137,9 @@ func main() {
 	Info.Printf("host:%s, ip: %s\n", url.Host, ip)
 
 	domainCheck := createDomainCheck(*url, ip)
-	toQuery := make(chan Query, 10000)
+	toQuery := make(chan Query, 10000) //TODO use go-routine to add to query queue
 	unfiltered := make(chan Query, 10000)
 	results := make(chan VisitedURL)
-	filteredResults := make(chan Result)
 	quit := make(chan bool)
 	var wg sync.WaitGroup
 	var workerWg sync.WaitGroup
@@ -155,7 +154,6 @@ func main() {
 	}
 	// setup filtering
 	go filterNonRelevant(unfiltered, toQuery, &wg)
-	go filterSeenResults(results, filteredResults)
 
 	checked, errors := 0, 0
 	go func() {
@@ -197,17 +195,6 @@ func createDomainCheck(url u.URL, ip []net.IP) func(u.URL) bool {
 		return bytes.Equal(_ip[0], ip[0])
 	}
 	return domainCheck
-}
-
-func filterSeenResults(results <-chan VisitedURL, filteredResults chan<- Result) {
-	var seen = make(map[Result]bool)
-	for v := range results {
-		r := Result{v.query.url.String(), v.Status}
-		if !seen[r] {
-			seen[r] = true
-			filteredResults <- r
-		}
-	}
 }
 
 func filterNonRelevant(in <-chan Query, out chan<- Query, wg *sync.WaitGroup) {
