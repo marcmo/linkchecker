@@ -12,9 +12,9 @@ task :profile_haskell do
   sh "hp2ps -e8in -c profiling-linkcheck.hp"
 end
 
-desc "runghc simpleclient.hs"
+desc "runghc ..."
 task :simple do
-  sh "runghc -- -package-db --ghc-arg=#{package_db} simpleclient.hs"
+  sh "runghc -- -package-db --ghc-arg=#{package_db} pragmatic.hs"
 end
 
 desc "ghci in sandbox"

@@ -15,11 +15,28 @@ import Data.Maybe(mapMaybe, fromMaybe)
 import Network.HTTP.Client
 import Network.HTTP.Types.Status
 import Network.URI
-import Text.HTML.TagSoup
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.ByteString.Char8 as BS
+import Prelude hiding (concat, putStrLn)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
+import Text.HTML.DOM
+import Text.XML.Cursor
 
 import Text.Printf (printf)
+
+findNodes :: Cursor -> [Cursor]
+findNodes = element "a"
+
+extractData :: Cursor -> T.Text
+extractData = T.concat . attribute "href"
+
+extractLinks :: URI -> B.ByteString -> S.Set URL
+extractLinks url page =
+    S.fromList $
+    mapMaybe ((canonicalizeLink url . B.fromStrict) . encodeUtf8)
+      (cursor $// findNodes &| extractData)
+      where cursor = fromDocument $ parseLBS page
 
 handleAny :: (SomeException -> IO a) -> IO a -> IO a
 handleAny = handle
@@ -59,19 +76,10 @@ pingUrl man u =
 getBody :: Manager -> URL -> IO (Either String B.ByteString)
 getBody man u = do
         req <- parseUrl $ B.unpack u
-        httpLbs req man >>= return . (Right . responseBody)
+        (Right . responseBody) <$> httpLbs req man
 
 getLinksFromUrl :: Manager -> URL -> URI -> IO (Either String (S.Set URL))
 getLinksFromUrl man url uri = getBody man url >>= \b -> return $ extractLinks uri <$> b
-
-extractLinks :: URI -> B.ByteString -> S.Set URL
-extractLinks url = S.fromList .
-            mapMaybe (canonicalizeLink url) .
-            filter (not . B.null) .
-            map (fromAttrib "href") .
-            filter (isTagOpenName "a") .
-            canonicalizeTags .
-            parseTags
 
 canonicalizeLink :: URI -> URL -> Maybe URL
 canonicalizeLink referer _path =
