@@ -8,7 +8,7 @@ end
 
 desc "profile haskell version"
 task :profile_haskell do
-  sh 'time cabal run profiling-linkcheck --ghc-options="+RTS -p -s -h -i0.1"'
+  sh "time cabal run profiling-linkcheck -- +RTS -p -s -h -i0.1"
   sh "hp2ps -e8in -c profiling-linkcheck.hp"
 end
 
@@ -20,4 +20,9 @@ end
 desc "ghci in sandbox"
 task :ghci do
   sh"ghci -no-user-package-db -package-db #{package_db}"
+end
+
+desc "install dependencies"
+task :deps do
+  sh "cabal install --only-dependencies --enable-library-profiling"
 end

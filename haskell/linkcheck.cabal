@@ -29,6 +29,8 @@ executable profiling-linkcheck
                       stm,
                       mtl,
                       text,
+                      array,
+                      regex-posix,
                       http-client,
                       http-client-tls,
                       http-types,

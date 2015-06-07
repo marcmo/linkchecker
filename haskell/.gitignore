@@ -1,1 +1,4 @@
 cabal.sandbox.config
+profiling-linkcheck.aux
+profiling-linkcheck.hp
+profiling-linkcheck.prof
