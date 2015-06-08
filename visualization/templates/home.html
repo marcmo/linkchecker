@@ -1,0 +1,135 @@
+{{define "title"}}A templated page{{end}}
+
+{{define "headscript"}}
+var serversocket = conn = new WebSocket("ws://{{.Host}}/ws");
+
+serversocket.onopen = function() {
+  serversocket.send("Connection init");
+}
+
+// Write message on receive
+serversocket.onmessage = function(e) {
+  document.getElementById('comms').innerHTML += "Received: " + e.data + "<br>";
+};
+
+function senddata() {
+  var data = document.getElementById('sendtext').value;
+  serversocket.send(data);
+  document.getElementById('comms').innerHTML += "Sent: " + data + "<br>";
+}
+
+function render(data){
+	var nodes = {};
+	var links = data.edges;
+	var path = data.path;
+  var pathMap = {};
+  path.forEach(function(d) {
+    pathMap[d[0] + "," + d[1]] = 1;
+    pathMap[d[1] + "," + d[0]] = 1;
+  });
+
+	var start = data.start;
+	var end = data.end;
+
+  var pathNodes = path.reduce(function(acc,x){
+      r = acc.push(x[1]);
+      return acc;
+  },[path[0][0]]);
+  // Compute the distinct nodes from the links.
+  // assign source and target for each link
+  links.forEach(function(link) {
+    link.source = nodes[link.source] || (nodes[link.source] = {name: link.source, type: getType(link.source)});
+    link.target = nodes[link.target] || (nodes[link.target] = {name: link.target, type: getType(link.target)});
+  });
+
+  function include(arr,obj) {
+    return (arr.indexOf(obj) != -1);
+  }
+
+  function getType(n) {
+    if (n == start) {
+      return "pstart";
+    }
+    if (n == end) {
+      return "pend";
+    }
+    if (include(pathNodes, n)){
+      return "onpath";
+    }
+    return "normal";
+  }
+
+  var w = 1200,
+      h = 600;
+
+  var force = d3.layout.force()
+      .nodes(d3.values(nodes))
+      .links(links)
+      .size([w, h])
+      .linkDistance(function(x){return x.length;})
+      .charge(-200)
+      .on("tick", tick)
+
+  force.start();
+
+  var svg = d3.select("body").append("svg:svg")
+      .attr("width", w)
+      .attr("height", h);
+
+  var edge = svg.append("svg:g").selectAll("line")
+      .data(links)
+    .enter().append("svg:line")
+      .attr("class", function(d) { return "edge " + d.type; });
+
+  function onPath(a, b) {
+    return pathMap[a.name + "," + b.name];
+  }
+
+  function updateEdge() {
+    this.attr("x1", function(d) {
+      return d.source.x;
+    }).attr("y1", function(d) {
+      return d.source.y;
+    }).attr("x2", function(d) {
+      return d.target.x;
+    }).attr("y2", function(d) {
+      return d.target.y;
+    });
+  }
+
+  var circle = svg.append("svg:g").selectAll("circle")
+      .data(force.nodes())
+    .enter().append("svg:circle")
+      .attr("r", 5)
+      .attr("class", function(d) { return d.type; })
+      .call(force.drag);
+
+  var text = svg.append("svg:g").selectAll("g")
+      .data(force.nodes())
+    .enter().append("svg:g");
+
+  text.append("svg:text")
+      .attr("x", 8)
+      .attr("y", ".31em")
+      .text(function(d) { return d.name; });
+
+  function tick() {
+    edge.call(updateEdge);
+
+    circle.attr("transform", function(d) {
+      return "translate(" + d.x + "," + d.y + ")";
+    });
+
+    text.attr("transform", function(d) {
+      return "translate(" + d.x + "," + d.y + ")";
+    });
+  }
+}
+d3.json( '/static/graph_output.json', render);
+{{end}}
+{{define "body"}}
+    <input id="sendtext" type="text" />
+    <input type="button" id="sendBtn" value="send" onclick="senddata()"></input>
+    <div id='comms'></div>
+{{end}}
+
