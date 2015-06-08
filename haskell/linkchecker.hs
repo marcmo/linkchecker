@@ -42,12 +42,12 @@ main = withSocketsDo $ do
 
     let logSync s = atomically $ writeTQueue logChannel (LogMsg s)
 
-    let k = 200
+    let k = 100
     -- the number of workers currently running
     runningWorkers <- atomically $ newTVar k
     activeCount <- atomically $ newTVar 0
     man <- newManager tlsManagerSettings {
-      managerResponseTimeout = Just (6 * 1000 * 1000),
+      managerResponseTimeout = Just (5 * 1000 * 1000),
       managerConnCount = k }
 
     logSync (printf "start %d threads...\n" k)
@@ -132,7 +132,7 @@ worker man logSync results jobQueue seen i activeCount = loop
               logSync (printf "---> [worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
               eitherLs <- getLinks man baseUrl url
               case eitherLs of
-                Left m -> atomically $ report m
+                Left m -> atomically $ report (LinkError (url, m))
                 Right ls -> do
                   let cleanedLinks = mapMaybe (canonicalizeLink baseUri) (S.toList ls)
                   newLinks <- atomically $ filterM (addIfPossible seen) cleanedLinks

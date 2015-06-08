@@ -33,21 +33,24 @@ extractLinks url = S.fromList .
   where pat = "href[ ]*=[ ]*\"([^\"]*)\"" :: B.ByteString
         r = makeRegex pat :: Regex
 
-getLinks :: Manager -> URL -> URL -> IO (Either LinkResult (S.Set URL))
+getLinks :: Manager -> URL -> URL -> IO (Either String (S.Set URL))
 getLinks man baseUrl url =
       case parseURI (B.unpack url) of
-        Nothing -> return $ Left (FormatError (url,"invalid URL"))
+        Nothing -> return $ Left "invalid URL"
         Just uri -> do
           ping <- pingUrl man url
           case ping of
-            Left e -> return $ Left (LinkError (url,e))
+            Left e -> return $ Left e
             Right contentType
-                  | "text/html" `BS.isPrefixOf` contentType && url `belongsTo` baseUrl -> do
-                    eitherLs <- getLinksFromUrl man url uri
-                    case eitherLs of
-                      Left s -> return $ Left (LinkError (url,s))
-                      Right ls -> return $ Right ls
-                  | otherwise -> return $ Left (OK (url,"STOPPING"))
+                  | not $ "text/html" `BS.isPrefixOf` contentType ->
+                      return $ Left "[200] (not an HTML doc)"
+                  | not $ url `belongsTo` baseUrl ->
+                      return $ Left "[200] (outside link)"
+                  | otherwise -> do
+                      eitherLs <- getLinksFromUrl man url uri
+                      return $ case eitherLs of
+                        Left s -> Left s
+                        Right ls -> Right ls
 
 getLinksFromUrl :: Manager -> URL -> URI -> IO (Either String (S.Set URL))
 getLinksFromUrl man url uri = getBody man url >>= \b -> return $ extractLinks uri <$> b

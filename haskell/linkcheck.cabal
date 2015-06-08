@@ -18,7 +18,6 @@ executable profiling-linkcheck
   main-is: linkchecker.hs
   ghc-options:
     -threaded
-    -prof
     -fprof-auto
     -rtsopts
   build-depends:      base,
@@ -40,8 +39,6 @@ executable profiling-linkcheck
 executable linkcheck
   main-is:            linkchecker.hs
   ghc-options:        -O2
-  -- other-modules:
-  -- other-extensions:
   build-depends:      base,
                       containers,
                       bytestring,
@@ -58,4 +55,21 @@ executable linkcheck
                       http-types,
                       random
   -- hs-source-dirs:
+  default-language:   Haskell2010
+executable pragmatic
+  main-is:            pragmatic.hs
+  ghc-options:        -O2
+  build-depends:      base,
+                      containers,
+                      bytestring,
+                      network-uri,
+                      network,
+                      mtl,
+                      array,
+                      async,
+                      regex-posix,
+                      http-client,
+                      http-client-tls,
+                      http-types,
+                      random
   default-language:   Haskell2010
