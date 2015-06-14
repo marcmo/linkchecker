@@ -2,6 +2,16 @@
 body {
     background-color: #333333;
 }
+.link {
+  stroke: orange;
+  stroke-width: 1.5px;
+}
+
+.node {
+  fill: #FFF;
+  stroke: #000;
+  stroke-width: 1.5px;
+}
 line.edge {
   fill: none;
   stroke: orange;

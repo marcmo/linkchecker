@@ -27,6 +27,15 @@ func print_binary(s []byte) {
 	fmt.Printf("\n")
 }
 
+type Link struct {
+	Origin   string
+	Outgoing []string
+}
+
+func mkLink(orig string, dests []string) Link {
+	return Link{Origin: orig, Outgoing: dests}
+}
+
 func echoHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -34,12 +43,15 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for {
-		messageType, p, err := conn.ReadMessage()
+		_, p, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
+		s := string(p[:])
+		fmt.Println("recieved this string:" + s)
 		print_binary(p)
-		err = conn.WriteMessage(messageType, p)
+		link := mkLink("e", []string{"b", "c"})
+		err = conn.WriteJSON(link)
 		if err != nil {
 			return
 		}

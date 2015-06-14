@@ -1,135 +1,131 @@
 {{define "title"}}A templated page{{end}}
 
 {{define "headscript"}}
-var serversocket = conn = new WebSocket("ws://{{.Host}}/ws");
+
+{{end}}
+{{define "body"}}
+  <script>
+
+var width = 960,
+    height = 500;
+
+var nodes = [],
+    links = [];
+
+var serversocket = conn = new WebSocket("ws://localhost:3000/ws");
 
 serversocket.onopen = function() {
-  serversocket.send("Connection init");
+  console.log("we are CONNECTED");
+}
+serversocket.onclose = function() {
+  console.log("we are DISCONNECTED");
 }
 
+function findNode(n){
+  console.log("findNode " + n + " in " + nodes);
+  for(var i = 0; i < nodes.length; i++) {
+    if (nodes[i].id === n.id) {
+      return nodes[i];
+    }
+  }
+  return null;
+}
+function insertNode(n){
+  for(var i = 0; i < nodes.length; i++) {
+    if (nodes[i].id === n.id) {
+      console.log(n + " was already in list");
+      return;
+    }
+  }
+  nodes.push(n);
+}
+
+function insertLink(link){
+  var start = findNode(link.source);
+  var end = findNode(link.target);
+  console.log("insertLink, start: " + start.id + ", end:" + end.id);
+  if (start != null && end != null){
+    for(var i = 0; i < links.length; i++) {
+      if (links[i].source.id === start.id &&
+          links[i].target.id === end.id)
+      {
+        console.log(link + " was already in links");
+        return;
+      }
+    }
+    links.push({source: start, target: end});
+  }
+}
 // Write message on receive
 serversocket.onmessage = function(e) {
-  document.getElementById('comms').innerHTML += "Received: " + e.data + "<br>";
+  console.log("Received: " + e.data);
+  var obj = JSON.parse(e.data);
+  console.log(obj);
+  insertNode({id: obj.Origin});
+  for (var i = 0; i < obj.Outgoing.length; i++) {
+    var dest = obj.Outgoing[i];
+    var link = {source: {id: obj.Origin}, target: {id: dest}};
+    insertLink(link);
+  }
+  start();
 };
+
+var force = d3.layout.force()
+    .nodes(nodes)
+    .links(links)
+    .charge(-400)
+    .linkDistance(120)
+    .size([width, height])
+    .on("tick", tick);
+
+var svg = d3.select("body").append("svg")
+    .attr("width", width)
+    .attr("height", height);
+
+var node = svg.selectAll(".node"),
+    link = svg.selectAll(".link");
+
+// 1. Add three nodes and three links.
+setTimeout(function() {
+  var a = {id: "a"}, b = {id: "b"}, c = {id: "c"};
+  nodes.push(a, b, c);
+  links.push({source: a, target: b}, {source: a, target: c}, {source: b, target: c});
+  start();
+}, 0);
+
+function start() {
+  link = link.data(force.links(), function(d) { return d.source.id + "-" + d.target.id; });
+  link.enter().insert("line", ".node").attr("class", "link");
+  link.exit().remove();
+
+  node = node.data(force.nodes(), function(d) { return d.id;});
+  node.enter().append("circle")
+    .attr("class", function(d) { return "node " + d.id; })
+    .attr("r", 8)
+    .call(force.drag);
+  node.exit().remove();
+
+  force.start();
+}
+
+function tick() {
+  node.attr("cx", function(d) { return d.x; })
+      .attr("cy", function(d) { return d.y; })
+
+  link.attr("x1", function(d) { return d.source.x; })
+      .attr("y1", function(d) { return d.source.y; })
+      .attr("x2", function(d) { return d.target.x; })
+      .attr("y2", function(d) { return d.target.y; });
+}
 
 function senddata() {
   var data = document.getElementById('sendtext').value;
   serversocket.send(data);
-  document.getElementById('comms').innerHTML += "Sent: " + data + "<br>";
+  console.log("Sent: " + data);
 }
 
-function render(data){
-	var nodes = {};
-	var links = data.edges;
-	var path = data.path;
-  var pathMap = {};
-  path.forEach(function(d) {
-    pathMap[d[0] + "," + d[1]] = 1;
-    pathMap[d[1] + "," + d[0]] = 1;
-  });
-
-	var start = data.start;
-	var end = data.end;
-
-  var pathNodes = path.reduce(function(acc,x){
-      r = acc.push(x[1]);
-      return acc;
-  },[path[0][0]]);
-  // Compute the distinct nodes from the links.
-  // assign source and target for each link
-  links.forEach(function(link) {
-    link.source = nodes[link.source] || (nodes[link.source] = {name: link.source, type: getType(link.source)});
-    link.target = nodes[link.target] || (nodes[link.target] = {name: link.target, type: getType(link.target)});
-  });
-
-  function include(arr,obj) {
-    return (arr.indexOf(obj) != -1);
-  }
-
-  function getType(n) {
-    if (n == start) {
-      return "pstart";
-    }
-    if (n == end) {
-      return "pend";
-    }
-    if (include(pathNodes, n)){
-      return "onpath";
-    }
-    return "normal";
-  }
-
-  var w = 1200,
-      h = 600;
-
-  var force = d3.layout.force()
-      .nodes(d3.values(nodes))
-      .links(links)
-      .size([w, h])
-      .linkDistance(function(x){return x.length;})
-      .charge(-200)
-      .on("tick", tick)
-
-  force.start();
-
-  var svg = d3.select("body").append("svg:svg")
-      .attr("width", w)
-      .attr("height", h);
-
-  var edge = svg.append("svg:g").selectAll("line")
-      .data(links)
-    .enter().append("svg:line")
-      .attr("class", function(d) { return "edge " + d.type; });
-
-  function onPath(a, b) {
-    return pathMap[a.name + "," + b.name];
-  }
-
-  function updateEdge() {
-    this.attr("x1", function(d) {
-      return d.source.x;
-    }).attr("y1", function(d) {
-      return d.source.y;
-    }).attr("x2", function(d) {
-      return d.target.x;
-    }).attr("y2", function(d) {
-      return d.target.y;
-    });
-  }
-
-  var circle = svg.append("svg:g").selectAll("circle")
-      .data(force.nodes())
-    .enter().append("svg:circle")
-      .attr("r", 5)
-      .attr("class", function(d) { return d.type; })
-      .call(force.drag);
-
-  var text = svg.append("svg:g").selectAll("g")
-      .data(force.nodes())
-    .enter().append("svg:g");
-
-  text.append("svg:text")
-      .attr("x", 8)
-      .attr("y", ".31em")
-      .text(function(d) { return d.name; });
-
-  function tick() {
-    edge.call(updateEdge);
-
-    circle.attr("transform", function(d) {
-      return "translate(" + d.x + "," + d.y + ")";
-    });
-
-    text.attr("transform", function(d) {
-      return "translate(" + d.x + "," + d.y + ")";
-    });
-  }
-}
-d3.json( '/static/graph_output.json', render);
-{{end}}
-{{define "body"}}
-    <input id="sendtext" type="text" />
-    <input type="button" id="sendBtn" value="send" onclick="senddata()"></input>
-    <div id='comms'></div>
+  </script>
+  <input id="sendtext" type="text" />
+  <input type="button" id="sendBtn" value="send" onclick="senddata()"></input>
 {{end}}
 
