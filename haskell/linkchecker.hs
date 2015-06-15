@@ -124,10 +124,7 @@ worker man logSync results jobQueue seen i activeCount = loop
         return ()) $ do
           job <- atomically $ modifyTVar activeCount (+1) >> readTQueue jobQueue
           case job of
-            Done -> do
-              logSync (printf "SHUTDOWN")
-              atomically $ modifyTVar activeCount (subtract 1)
-              return ()
+            Done -> logSync (printf "SHUTDOWN")
             (Page orig url) -> do
               logSync (printf "---> [worker%d] working on page %s (source %s)" i (B.unpack url) (B.unpack orig))
               eitherLs <- getLinks man baseUrl url
