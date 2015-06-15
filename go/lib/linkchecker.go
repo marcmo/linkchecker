@@ -18,20 +18,20 @@ const requestTimeout = 6 * time.Second
 var totalWorkItems int32 = 0
 
 type VisitedURL struct {
-	VQuery      Query
+	Query       QueryT
 	Status      string
 	LinkedUrls  map[u.URL]bool
 	HadProblems bool
 }
 
-type Query struct {
+type QueryT struct {
 	Url    u.URL
 	Origin string
 }
 
 type Search struct {
-	toQuery     <-chan Query      // pull next url to test from this channel
-	unfiltered  chan<- Query      // send all found links back
+	toQuery     <-chan QueryT     // pull next url to test from this channel
+	unfiltered  chan<- QueryT     // send all found links back
 	results     chan<- VisitedURL // add processed page to results
 	quit        <-chan bool       // listen to when we should quit
 	domainCheck func(u.URL) bool  // check if the url should be queried further
@@ -48,7 +48,7 @@ func contentCanHaveLinks(r http.Response) bool {
 	return strings.Contains(r.Header["Content-Type"][0], "text/html")
 }
 
-func collectLinks(query Query, checkDomain func(u.URL) bool) (chan VisitedURL, chan error) {
+func collectLinks(query QueryT, checkDomain func(u.URL) bool) (chan VisitedURL, chan error) {
 	c := make(chan VisitedURL)
 	errChan := make(chan error)
 	dialTimeout := func(network, addr string) (net.Conn, error) {
@@ -103,7 +103,7 @@ func searchPage(s Search, id int) {
 			case t := <-testedChan:
 				for v := range t.LinkedUrls {
 					s.wg.Add(1)
-					s.unfiltered <- Query{v, query.Url.String()}
+					s.unfiltered <- QueryT{v, query.Url.String()}
 					atomic.AddInt32(&totalWorkItems, -1)
 				}
 				s.results <- t
@@ -132,15 +132,15 @@ func CheckLinks(urlString string, parallel int, results chan VisitedURL) {
 	Info.Printf("host:%s, ip: %s\n", url.Host, ip)
 
 	domainCheck := createDomainCheck(*url, ip)
-	toQuery := make(chan Query, 10000) //TODO use go-routine to add to query queue
-	unfiltered := make(chan Query, 10000)
+	toQuery := make(chan QueryT, 10000) //TODO use go-routine to add to query queue
+	unfiltered := make(chan QueryT, 10000)
 	// results := make(chan VisitedURL)
 	quit := make(chan bool)
 	var wg sync.WaitGroup
 	var workerWg sync.WaitGroup
 
 	wg.Add(1)
-	toQuery <- Query{*url, ""}
+	toQuery <- QueryT{*url, ""}
 
 	workerWg.Add(parallel)
 	s := Search{toQuery, unfiltered, results, quit, domainCheck, &wg, &workerWg}
@@ -178,7 +178,7 @@ func createDomainCheck(url u.URL, ip []net.IP) func(u.URL) bool {
 	return domainCheck
 }
 
-func filterNonRelevant(in <-chan Query, out chan<- Query, wg *sync.WaitGroup) {
+func filterNonRelevant(in <-chan QueryT, out chan<- QueryT, wg *sync.WaitGroup) {
 	var checked = make(map[string]bool)
 	for v := range in {
 		link := removeParameters(v.Url)

@@ -23,7 +23,7 @@ func main() {
 				logFn = lib.Warning.Printf
 				errors = errors + 1
 			}
-			logFn("Checked[%d]: %s (%s) (origin:%s)\n", checked, v.VQuery.Url.String(), v.Status, v.VQuery.Origin)
+			logFn("Checked[%d]: %s (%s) (origin:%s)\n", checked, v.Query.Url.String(), v.Status, v.Query.Origin)
 		}
 	}()
 

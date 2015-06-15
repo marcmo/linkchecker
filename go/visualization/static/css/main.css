@@ -4,12 +4,26 @@ body {
 }
 .link {
   stroke: orange;
+  stroke-width: 1px;
+  stroke-opacity: .3;
+}
+.nodetrue {
+  stroke: #000;
+  fill: #000;
   stroke-width: 1.5px;
 }
-
+.nodefalse {
+  stroke: green;
+  fill: green;
+  stroke-width: 1.5px;
+}
+.nodeproblem {
+  stroke: red;
+  fill: red;
+  stroke-width: 1.5px;
+}
 .node {
   fill: #FFF;
-  stroke: #000;
   stroke-width: 1.5px;
 }
 line.edge {
@@ -50,7 +64,7 @@ text {
   stroke: white;
 }
 text.edge {
-	fill: gray;
+  fill: gray;
   font: 9px sans-serif;
   pointer-events: none;
 }

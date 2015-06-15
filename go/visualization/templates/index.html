@@ -6,8 +6,8 @@
 {{define "body"}}
   <script>
 
-var width = 960,
-    height = 500;
+var width = 1260,
+    height = 700;
 
 var nodes = [],
     links = [];
@@ -22,7 +22,6 @@ serversocket.onclose = function() {
 }
 
 function findNode(n){
-  console.log("findNode " + n + " in " + nodes);
   for(var i = 0; i < nodes.length; i++) {
     if (nodes[i].id === n.id) {
       return nodes[i];
@@ -33,18 +32,19 @@ function findNode(n){
 function insertNode(n){
   for(var i = 0; i < nodes.length; i++) {
     if (nodes[i].id === n.id) {
-      console.log(n + " was already in list");
+      nodes[i].problems = n.problems;
       return;
     }
   }
   nodes.push(n);
+  console.log("inserted node: " + JSON.stringify(n));
 }
 
 function insertLink(link){
   var start = findNode(link.source);
   var end = findNode(link.target);
-  console.log("insertLink, start: " + start.id + ", end:" + end.id);
   if (start != null && end != null){
+    console.log("insertLink, start: " + start.id + ", end:" + end.id);
     for(var i = 0; i < links.length; i++) {
       if (links[i].source.id === start.id &&
           links[i].target.id === end.id)
@@ -56,27 +56,30 @@ function insertLink(link){
     links.push({source: start, target: end});
   }
 }
-// Write message on receive
+
+function inDomain(url){
+  return /esrlabs\.com/.test(url);
+}
 serversocket.onmessage = function(e) {
   console.log("Received: " + e.data);
   var obj = JSON.parse(e.data);
-  console.log(obj);
-  var origin = obj.Origin;
-  insertNode({id: origin});
-  for (var i = 0; i < obj.Outgoing.length; i++) {
-    var dest = obj.Outgoing[i];
-    insertNode({id: dest});
-    var link = {source: {id: origin}, target: {id: dest}};
-    insertLink(link);
-  }
+  var referee = obj.Referee;
+  var page = obj.Page;
+  insertNode({
+    id: page,
+    inDomain: inDomain(page),
+    problems: obj.HadProblems
+  });
+  var link = {source: {id: referee}, target: {id: page}};
+  insertLink(link);
   start();
 };
 
 var force = d3.layout.force()
     .nodes(nodes)
     .links(links)
-    .charge(-400)
-    .linkDistance(120)
+    .charge(-100)
+    .linkDistance(50)
     .size([width, height])
     .on("tick", tick);
 
@@ -87,23 +90,22 @@ var svg = d3.select("body").append("svg")
 var node = svg.selectAll(".node"),
     link = svg.selectAll(".link");
 
-// 1. Add three nodes and three links.
-setTimeout(function() {
-  var a = {id: "a"}, b = {id: "b"}, c = {id: "c"};
-  nodes.push(a, b, c);
-  links.push({source: a, target: b}, {source: a, target: c}, {source: b, target: c});
-  start();
-}, 0);
-
+function getNodeClass(d){
+  if (d.problems === true) {
+    return "nodeproblem";
+  }
+  return "node" + d.inDomain;
+}
 function start() {
   link = link.data(force.links(), function(d) { return d.source.id + "-" + d.target.id; });
-  link.enter().insert("line", ".node").attr("class", "link");
+  link.enter().insert("line", ".node")
+    .attr("class", "link");
   link.exit().remove();
 
   node = node.data(force.nodes(), function(d) { return d.id;});
   node.enter().append("circle")
-    .attr("class", function(d) { return "node " + d.id; })
-    .attr("r", 8)
+    .attr("class", getNodeClass)
+    .attr("r", 6)
     .call(force.drag);
   node.exit().remove();
 
@@ -127,7 +129,7 @@ function senddata() {
 }
 
   </script>
-  <input id="sendtext" type="text" />
+  <input id="sendtext" type="text" value="http://esrlabs.com" />
   <input type="button" id="sendBtn" value="send" onclick="senddata()"></input>
 {{end}}
 

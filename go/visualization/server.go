@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"text/template"
 )
 
@@ -22,12 +23,13 @@ var upgrader = websocket.Upgrader{
 }
 
 type Link struct {
-	Origin   string
-	Outgoing []string
+	Page        string
+	Referee     string
+	HadProblems bool
 }
 
-func mkLink(orig string, dests []string) Link {
-	return Link{Origin: orig, Outgoing: dests}
+func mkLink(orig string, referee string, problem bool) Link {
+	return Link{Page: orig, Referee: referee, HadProblems: problem}
 }
 
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
@@ -36,34 +38,29 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(err)
 		return
 	}
-	for {
-		_, p, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-		s := string(p[:])
-		fmt.Println("received this string:" + s)
-		results := make(chan lib.VisitedURL)
-		go func() {
-			for v := range results {
-				outLinks := make([]string, len(v.LinkedUrls))
-				for u := range v.LinkedUrls {
-					outLinks = append(outLinks, u.String())
-				}
-				link := mkLink(v.VQuery.Url.String(), outLinks)
-				err = conn.WriteJSON(link)
-				if err != nil {
-					panic(err)
-				}
-			}
-		}()
-		go lib.CheckLinks(s, 20, results)
-		link := mkLink("e", []string{"b", "c"})
-		err = conn.WriteJSON(link)
-		if err != nil {
-			return
-		}
+	_, p, err := conn.ReadMessage()
+	if err != nil {
+		return
 	}
+	s := string(p[:])
+	fmt.Println("received this string:" + s)
+	results := make(chan lib.VisitedURL)
+	go func() {
+		for v := range results {
+			lib.Trace.Printf("sending link %s\n", v.Query.Url.String())
+			var outLinks []string
+			for u := range v.LinkedUrls {
+				trimmed := strings.TrimSpace(u.String())
+				outLinks = append(outLinks, trimmed)
+			}
+			x := mkLink(v.Query.Url.String(), v.Query.Origin, v.HadProblems)
+			err = conn.WriteJSON(x)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}()
+	go lib.CheckLinks(s, 20, results)
 }
 
 func serveTemplate(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +95,7 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	lib.SetLogLevel(lib.INFO)
+	lib.SetLogLevel(lib.TRACE)
 	fs := http.FileServer(http.Dir("static"))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 	http.HandleFunc("/", serveTemplate)
