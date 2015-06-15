@@ -61,10 +61,12 @@ serversocket.onmessage = function(e) {
   console.log("Received: " + e.data);
   var obj = JSON.parse(e.data);
   console.log(obj);
-  insertNode({id: obj.Origin});
+  var origin = obj.Origin;
+  insertNode({id: origin});
   for (var i = 0; i < obj.Outgoing.length; i++) {
     var dest = obj.Outgoing[i];
-    var link = {source: {id: obj.Origin}, target: {id: dest}};
+    insertNode({id: dest});
+    var link = {source: {id: origin}, target: {id: dest}};
     insertLink(link);
   }
   start();

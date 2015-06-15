@@ -1,8 +1,7 @@
-package main
+package lib
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -19,10 +18,25 @@ const requestTimeout = 6 * time.Second
 var totalWorkItems int32 = 0
 
 type VisitedURL struct {
-	query       Query
+	VQuery      Query
 	Status      string
 	LinkedUrls  map[u.URL]bool
 	HadProblems bool
+}
+
+type Query struct {
+	Url    u.URL
+	Origin string
+}
+
+type Search struct {
+	toQuery     <-chan Query      // pull next url to test from this channel
+	unfiltered  chan<- Query      // send all found links back
+	results     chan<- VisitedURL // add processed page to results
+	quit        <-chan bool       // listen to when we should quit
+	domainCheck func(u.URL) bool  // check if the url should be queried further
+	wg          *sync.WaitGroup
+	workerWg    *sync.WaitGroup
 }
 
 type Result struct {
@@ -46,22 +60,22 @@ func collectLinks(query Query, checkDomain func(u.URL) bool) (chan VisitedURL, c
 	go func() {
 		defer close(c)
 		defer close(errChan)
-		Trace.Printf("~~~~~~ trying %s\n", query.url.String())
-		res, err := client.Head(query.url.String())
+		Trace.Printf("~~~~~~ trying %s\n", query.Url.String())
+		res, err := client.Head(query.Url.String())
 		linkedUrls := make(map[u.URL]bool)
 		if err != nil {
 			c <- VisitedURL{query, fmt.Sprintf("Error:%s", err), linkedUrls, true}
-			Error.Printf("error occured during http.Head for %s:%s\n", query.url.String(), err)
+			Error.Printf("error occured during http.Head for %s:%s\n", query.Url.String(), err)
 			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true}
-			Trace.Printf("HTTP status not OK %s (%d)\n", query.url.String(), res.StatusCode)
+			Trace.Printf("HTTP status not OK %s (%d)\n", query.Url.String(), res.StatusCode)
 			return
 		}
-		if checkDomain(query.url) && contentCanHaveLinks(*res) {
-			Trace.Printf("~~~~~~ crawling %s\n", query.url.String())
-			linkChan := GetAllLinks(query.url, errChan)
+		if checkDomain(query.Url) && contentCanHaveLinks(*res) {
+			Trace.Printf("~~~~~~ crawling %s\n", query.Url.String())
+			linkChan := GetAllLinks(query.Url, errChan)
 			for e := range linkChan {
 				if !linkedUrls[e] {
 					linkedUrls[e] = true
@@ -75,23 +89,7 @@ func collectLinks(query Query, checkDomain func(u.URL) bool) (chan VisitedURL, c
 	return c, errChan
 }
 
-type Query struct {
-	url    u.URL
-	origin string
-}
-
-type Search struct {
-	toQuery     <-chan Query      // pull next url to test from this channel
-	unfiltered  chan<- Query      // send all found links back
-	results     chan<- VisitedURL // add processed page to results
-	quit        <-chan bool       // listen to when we should quit
-	domainCheck func(u.URL) bool  // check if the url should be queried further
-	id          int               // id of worker go routine
-	wg          *sync.WaitGroup
-	workerWg    *sync.WaitGroup
-}
-
-func searchPage(s Search) {
+func searchPage(s Search, id int) {
 	defer s.workerWg.Done()
 	for {
 		select {
@@ -99,13 +97,13 @@ func searchPage(s Search) {
 			if !ok {
 				return
 			}
-			Trace.Printf("[%d]..............searching %s\n", s.id, query.url.String())
+			Trace.Printf("[%d]..............searching %s\n", id, query.Url.String())
 			testedChan, errChan := collectLinks(query, s.domainCheck)
 			select {
 			case t := <-testedChan:
 				for v := range t.LinkedUrls {
 					s.wg.Add(1)
-					s.unfiltered <- Query{v, query.url.String()}
+					s.unfiltered <- Query{v, query.Url.String()}
 					atomic.AddInt32(&totalWorkItems, -1)
 				}
 				s.results <- t
@@ -121,12 +119,9 @@ func searchPage(s Search) {
 	}
 }
 
-func main() {
-	SetLogLevel(INFO)
-	urlString := flag.String("s", "http://esrlabs.com", "the URL of the site to check links")
-	parallel := flag.Int("p", 15, "number of parallel executions")
-	flag.Parse()
-	url, err := u.Parse(*urlString)
+func CheckLinks(urlString string, parallel int, results chan VisitedURL) {
+	fmt.Println("CheckLinks for " + urlString)
+	url, err := u.Parse(urlString)
 	if err != nil {
 		log.Fatal("invalid url:")
 	}
@@ -139,7 +134,7 @@ func main() {
 	domainCheck := createDomainCheck(*url, ip)
 	toQuery := make(chan Query, 10000) //TODO use go-routine to add to query queue
 	unfiltered := make(chan Query, 10000)
-	results := make(chan VisitedURL)
+	// results := make(chan VisitedURL)
 	quit := make(chan bool)
 	var wg sync.WaitGroup
 	var workerWg sync.WaitGroup
@@ -147,31 +142,17 @@ func main() {
 	wg.Add(1)
 	toQuery <- Query{*url, ""}
 
-	workerWg.Add(*parallel)
-	for i := 0; i < *parallel; i++ {
-		s := Search{toQuery, unfiltered, results, quit, domainCheck, i, &wg, &workerWg}
-		go searchPage(s)
+	workerWg.Add(parallel)
+	s := Search{toQuery, unfiltered, results, quit, domainCheck, &wg, &workerWg}
+	for i := 0; i < parallel; i++ {
+		go searchPage(s, i)
 	}
 	// setup filtering
 	go filterNonRelevant(unfiltered, toQuery, &wg)
 
-	checked, errors := 0, 0
-	go func() {
-		for v := range results {
-			checked = checked + 1
-			logFn := Info.Printf
-			if v.HadProblems {
-				logFn = Warning.Printf
-				errors = errors + 1
-			}
-			logFn("Checked[%d]: %s (%s) (origin:%s)\n", checked, v.query.url.String(), v.Status, v.query.origin)
-		}
-	}()
-
 	Info.Printf("waiting for queue...\n")
 	wg.Wait()
-	fmt.Printf("queue done!! %d pages checked, %d had problems (%d%%)\n", checked, errors, errors*100/checked)
-	for i := 0; i < *parallel; i++ {
+	for i := 0; i < parallel; i++ {
 		quit <- true
 	}
 	Info.Printf("waiting for crunchers...\n")
@@ -200,11 +181,11 @@ func createDomainCheck(url u.URL, ip []net.IP) func(u.URL) bool {
 func filterNonRelevant(in <-chan Query, out chan<- Query, wg *sync.WaitGroup) {
 	var checked = make(map[string]bool)
 	for v := range in {
-		link := removeParameters(v.url)
+		link := removeParameters(v.Url)
 		if !checked[link] {
 			checked[link] = true
 			out <- v
-			Trace.Printf(".........................added %s [host:%s]\n", v.url.String(), v.url.Host)
+			Trace.Printf(".........................added %s [host:%s]\n", v.Url.String(), v.Url.Host)
 		} else {
 			wg.Done() //already counted for, but we don't use it
 		}
