@@ -1,25 +1,25 @@
 
 body {
-    background-color: #333333;
+    background-color: #BBDB82 !important;
 }
 .link {
-  stroke: orange;
+  stroke: rgb(94, 165, 75);
   stroke-width: 1px;
   stroke-opacity: .3;
 }
 .nodetrue {
-  stroke: #000;
-  fill: #000;
+  stroke: rgb(94, 165, 75);
+  fill: rgb(94, 165, 75);
   stroke-width: 1.5px;
 }
 .nodefalse {
-  stroke: green;
-  fill: green;
+  stroke: rgb(77, 126, 64);
+  fill: rgb(77, 126, 64);
   stroke-width: 1.5px;
 }
 .nodeproblem {
-  stroke: red;
-  fill: red;
+  stroke: rgb(110, 109, 77);
+  fill: rgb(110, 109, 77);
   stroke-width: 1.5px;
 }
 .node {

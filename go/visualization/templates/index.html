@@ -16,6 +16,14 @@ var serversocket = conn = new WebSocket("ws://localhost:3000/ws");
 
 serversocket.onopen = function() {
   console.log("we are CONNECTED");
+  document.getElementById('sendtext').onkeypress = function(e){
+    if (!e) e = window.event;
+    var keyCode = e.keyCode || e.which;
+    if (keyCode == '13'){
+      senddata();
+      return false;
+    }
+  }
 }
 serversocket.onclose = function() {
   console.log("we are DISCONNECTED");
@@ -57,9 +65,6 @@ function insertLink(link){
   }
 }
 
-function inDomain(url){
-  return /esrlabs\.com/.test(url);
-}
 serversocket.onmessage = function(e) {
   console.log("Received: " + e.data);
   var obj = JSON.parse(e.data);
@@ -67,8 +72,8 @@ serversocket.onmessage = function(e) {
   var page = obj.Page;
   insertNode({
     id: page,
-    inDomain: inDomain(page),
-    problems: obj.HadProblems
+    inDomain: obj.WithinDomain,
+    problems: obj.HadProblems,
   });
   var link = {source: {id: referee}, target: {id: page}};
   insertLink(link);
@@ -129,7 +134,16 @@ function senddata() {
 }
 
   </script>
-  <input id="sendtext" type="text" value="http://esrlabs.com" />
-  <input type="button" id="sendBtn" value="send" onclick="senddata()"></input>
+  <div class="row">
+    <div class="col-md-1"></div>
+    <div class="col-lg-6">
+      <div class="input-group">
+        <span class="input-group-btn">
+          <button class="btn btn-default" type="button" onclick="senddata()">Go!</button>
+        </span>
+        <input id="sendtext" type="text" class="form-control" placeholder="page to check...">
+      </div><!-- /input-group -->
+    </div><!-- /.col-lg-6 -->
+  </div><!-- /.row -->
 {{end}}
 

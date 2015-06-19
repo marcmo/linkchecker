@@ -23,13 +23,14 @@ var upgrader = websocket.Upgrader{
 }
 
 type Link struct {
-	Page        string
-	Referee     string
-	HadProblems bool
+	Page         string
+	Referee      string
+	HadProblems  bool
+	WithinDomain bool
 }
 
-func mkLink(orig string, referee string, problem bool) Link {
-	return Link{Page: orig, Referee: referee, HadProblems: problem}
+func mkLink(orig string, referee string, problem bool, inDomain bool) Link {
+	return Link{Page: orig, Referee: referee, HadProblems: problem, WithinDomain: inDomain}
 }
 
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +54,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				trimmed := strings.TrimSpace(u.String())
 				outLinks = append(outLinks, trimmed)
 			}
-			x := mkLink(v.Query.Url.String(), v.Query.Origin, v.HadProblems)
+			x := mkLink(v.Query.Url.String(), v.Query.Origin, v.HadProblems, v.WithinDomain)
 			err = conn.WriteJSON(x)
 			if err != nil {
 				panic(err)

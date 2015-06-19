@@ -18,10 +18,11 @@ const requestTimeout = 6 * time.Second
 var totalWorkItems int32 = 0
 
 type VisitedURL struct {
-	Query       QueryT
-	Status      string
-	LinkedUrls  map[u.URL]bool
-	HadProblems bool
+	Query        QueryT
+	Status       string
+	LinkedUrls   map[u.URL]bool
+	HadProblems  bool
+	WithinDomain bool
 }
 
 type QueryT struct {
@@ -63,17 +64,18 @@ func collectLinks(query QueryT, checkDomain func(u.URL) bool) (chan VisitedURL, 
 		Trace.Printf("~~~~~~ trying %s\n", query.Url.String())
 		res, err := client.Head(query.Url.String())
 		linkedUrls := make(map[u.URL]bool)
+		withinSite := checkDomain(query.Url)
 		if err != nil {
-			c <- VisitedURL{query, fmt.Sprintf("Error:%s", err), linkedUrls, true}
+			c <- VisitedURL{query, fmt.Sprintf("Error:%s", err), linkedUrls, true, withinSite}
 			Error.Printf("error occured during http.Head for %s:%s\n", query.Url.String(), err)
 			return
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true}
+			c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, true, withinSite}
 			Trace.Printf("HTTP status not OK %s (%d)\n", query.Url.String(), res.StatusCode)
 			return
 		}
-		if checkDomain(query.Url) && contentCanHaveLinks(*res) {
+		if withinSite && contentCanHaveLinks(*res) {
 			Trace.Printf("~~~~~~ crawling %s\n", query.Url.String())
 			linkChan := GetAllLinks(query.Url, errChan)
 			for e := range linkChan {
@@ -84,7 +86,7 @@ func collectLinks(query QueryT, checkDomain func(u.URL) bool) (chan VisitedURL, 
 				}
 			}
 		}
-		c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, false}
+		c <- VisitedURL{query, fmt.Sprintf("Status:%d", res.StatusCode), linkedUrls, false, withinSite}
 	}()
 	return c, errChan
 }
@@ -132,8 +134,8 @@ func CheckLinks(urlString string, parallel int, results chan VisitedURL) {
 	Info.Printf("host:%s, ip: %s\n", url.Host, ip)
 
 	domainCheck := createDomainCheck(*url, ip)
-	toQuery := make(chan QueryT, 10000) //TODO use go-routine to add to query queue
-	unfiltered := make(chan QueryT, 10000)
+	toQuery := make(chan QueryT, 100000) //TODO use go-routine to add to query queue
+	unfiltered := make(chan QueryT, 100000)
 	// results := make(chan VisitedURL)
 	quit := make(chan bool)
 	var wg sync.WaitGroup
