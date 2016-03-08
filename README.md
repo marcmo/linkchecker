@@ -25,13 +25,12 @@ straight forward concurrency, multi-threaded solution
 
 ## Haskell-solution
 
-using STM for all concurrency
+using [STM](http://book.realworldhaskell.org/read/software-transactional-memory.html) for all concurrency
 
 ### Example Usage
 
     $ cd haskell
-    $ cabal sandbox init
-    $ cabal install --only-dependencies
-    $ cabal build linkcheck
-    $ cabal run linkcheck
+    $ stack setup
+    $ stack build
+    $ stack exec linkcheck
 
