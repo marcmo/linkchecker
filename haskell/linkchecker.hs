@@ -5,7 +5,7 @@ import DataTypes
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM
 import Control.Exception (finally, handle, SomeException(..))
-import Control.Monad.Error
+import Control.Monad
 import Control.Applicative
 import qualified Data.Set as S
 import Data.Maybe(mapMaybe, fromJust)

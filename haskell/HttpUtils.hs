@@ -90,6 +90,8 @@ canonicalizeLink referer _path =
 belongsTo :: URL -> URL -> Bool
 belongsTo url _host =
   isRelativeReference (B.unpack url) || regName url == regName _host
-  where regName u = (removeWWW . uriRegName) <$> (parseURI (B.unpack u) >>= uriAuthority)
+  where regName :: URL -> Maybe String
+        regName u = (removeWWW . uriRegName) <$> (parseURI (B.unpack u) >>= uriAuthority)
+        removeWWW :: String -> String
         removeWWW u = fromMaybe u (stripPrefix "www." u)
 
